@@ -26,9 +26,15 @@ function contentTypeFor(path) {
 }
 
 // Rejects any request path that would resolve outside the served root, such as
-// `..` segments or an absolute path smuggled into the URL.
+// `..` segments or an absolute path smuggled into the URL. A malformed %-escape
+// (an invalid request, not a missing file) is rejected the same way as a traversal.
 function resolveSafe(root, urlPath) {
-  const decoded = decodeURIComponent(urlPath.split('?')[0]);
+  let decoded;
+  try {
+    decoded = decodeURIComponent(urlPath.split('?')[0]);
+  } catch {
+    return null;
+  }
   const relative = decoded === '/' ? 'index.html' : decoded.replace(/^\/+/, '');
   const full = resolve(root, relative);
   if (full !== root && !full.startsWith(root + sep)) return null;
