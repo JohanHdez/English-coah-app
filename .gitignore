@@ -1,0 +1,6 @@
+e2e/.profile/
+e2e/fixtures/
+e2e/results/
+.env
+.DS_Store
+.superpowers/
