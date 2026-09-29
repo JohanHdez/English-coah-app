@@ -1,7 +1,8 @@
-// App-shell cache only. Model files are cached by transformers.js itself (large,
-// content-addressed, fetched on demand) and Groq responses must never be cached
-// (they carry the meeting's audio transcript), so this worker only ever touches the
-// same-origin GET requests for the shell files listed below.
+// App-shell cache only. Model files (vendor/, Hugging Face) are cached by
+// transformers.js itself (large, content-addressed, fetched on demand) and Groq
+// responses must never be cached (they carry the meeting's audio transcript), so the
+// fetch handler below writes to the cache only for the exact URLs in SHELL_FILES —
+// every other same-origin GET is left for the browser to fetch normally, uncached.
 const CACHE_NAME = 'ec-shell-v1';
 const SHELL_FILES = [
   './',
@@ -13,6 +14,9 @@ const SHELL_FILES = [
   'icons/icon-512.png',
   'icons/maskable-512.png',
 ];
+// Resolved the same way `cache.addAll` resolves them, so a request's exact URL can
+// be checked against this set without re-deriving the relative path from a URL.
+const SHELL_URLS = new Set(SHELL_FILES.map((path) => new URL(path, self.location.href).href));
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -33,6 +37,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
+  if (!SHELL_URLS.has(request.url)) return; // not part of the shell: normal network fetch, never cached
 
   event.respondWith(
     fetch(request)
