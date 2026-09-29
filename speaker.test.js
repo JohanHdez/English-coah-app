@@ -41,7 +41,7 @@ test('hybrid: a turn clearly matching the print is mine whatever the other centr
 });
 
 test('a correction moves the turn and the centres follow', () => {
-  const s = createSpeakers(ME, { rule: 'centres' });
+  const s = createSpeakers(ME, { rule: 'centres', threshold: 0.5 });
   classify(s, 'x', normalize([0.45, 0.9, 0]));
   assert.equal(s.turns.get('x').speaker, 'them');
   assert.equal(correct(s, 'x', 'me'), true);

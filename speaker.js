@@ -2,8 +2,12 @@
 // other voice has no print, so its centre is learnt from the turns assigned to it.
 
 // Similarity to the learner's centre above which a turn is the learner's before
-// any other voice is known (and, under 'hybrid', always). Calibrated by e2e/speakers.mjs.
-export const MATCH_MIN = 0.5;
+// any other voice is known (and, under 'hybrid', always). Calibrated by e2e/speakers.mjs
+// on 2026-09-29: over 280 clean full turns, learner turns scored 0.394–0.937 against
+// the print (p10 0.596) and other voices -0.053–0.558 (p90 0.373); 0.39 is the
+// accuracy optimum there (96 %). Under 'centres', room, 2 s crops, same-gender pairs:
+// 94 % (hybrid and threshold 84 %); one pairing never grows an other centre at 0.39.
+export const MATCH_MIN = 0.39;
 // The print outweighs any single turn, so one misassigned turn cannot drag the
 // learner's centre toward the other voice.
 export const PRINT_WEIGHT = 3;
@@ -30,7 +34,7 @@ export function meanOf(vectors) {
   return normalize(out);
 }
 
-export function createSpeakers(print, { threshold = MATCH_MIN, rule = 'hybrid' } = {}) {
+export function createSpeakers(print, { threshold = MATCH_MIN, rule = 'centres' } = {}) {
   return { print: normalize(print), threshold, rule, turns: new Map() };
 }
 

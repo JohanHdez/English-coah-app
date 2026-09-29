@@ -90,10 +90,24 @@ the service worker) afterwards — a stale `sw.js` will happily serve the old sh
 
 ## End-to-end
 
-None yet. Task 4 adds `node e2e/speakers.mjs` (speaker-accuracy measurement over synthetic
-conversations); Task 7 adds `node e2e/run.mjs <learner> <other> [--condition=room|clean]` (the
-whole app, in Chrome, with a fake microphone and a Groq stand-in). This section is filled in
-when those tasks land.
+```bash
+node e2e/fixtures.mjs                        # synthesise the 28 conversations + 4 enrollments (macOS `say`)
+node e2e/speakers.mjs                        # speaker accuracy: embed in Chrome, replay in Node
+node e2e/speakers.mjs --replay=e2e/results/speakers-<date>-vectors.json
+                                             # re-decide saved vectors only: seconds, no Chrome
+```
+
+`e2e/speakers.mjs` builds any missing fixture, serves the repo in-process, opens
+`e2e/speakers.html` in headless Chrome (profile in `e2e/.profile`) and embeds every turn cropped
+to 1, 2, 4 s and in full, plus the enrollment print. Node then replays `speaker.js` over the saved
+vectors: it calibrates the threshold on the `clean` set, and prints accuracy per learner × other ×
+condition × duration × rule, a summary over same-gender, cross-gender and Spanish-Spanish pairs,
+centre poisoning in both directions, a threshold-sensitivity table, mixed segments from `lib/segmenter.js`, and embedding time
+p50/p90. It also checks `embed-worker.js` against the page and that the replay reproduces the
+page's own decisions. About 12 minutes for 1 516 embeddings (a replay takes seconds); the first run downloads the model
+(6.7 MB from Hugging Face) and needs network, later runs read it from the profile's cache. Output
+goes to `e2e/results/` (git-ignored): `speakers-<date>.json` and the vectors file. Quote its
+numbers; Task 7 adds `node e2e/run.mjs` (the whole app with a fake microphone).
 
 ## Known debt
 
