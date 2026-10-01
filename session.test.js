@@ -295,3 +295,33 @@ test('manual mode is captured at segment() time, not when the embedding resolves
   assert.equal(bs.length, 1);
   assert.equal(bs[0].entry.speaker, 'me', 'the mode in force at capture time must win');
 });
+
+test('drain() resolves only after every queued segment has produced its bubble', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const transcribe = fakeTranscribe([{ delay: 15 }, { delay: 5 }]);
+  const session = createSession({ embed: fakeEmbed, transcribe, speakers, onEvent });
+
+  session.segment(seg('me', 0));
+  session.segment(seg('them', 1000));
+  await session.drain();
+
+  assert.equal(bubbles(events).length, 2, 'both bubbles landed before drain() resolved');
+});
+
+test('drain() also waits out a segment queued by a 5b split', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const transcribe = fakeTranscribe([{ delay: 10 }, { delay: 10 }]);
+  const session = createSession({ embed: fakeEmbed, transcribe, speakers, onEvent });
+
+  // Same 4.5 s switch-midway audio as the 5b split test above: splitIfNeeded's
+  // window rescan itself awaits several embed() calls before either half ever
+  // reaches labelAndDispatch, so this also proves drain() outlasts that scan.
+  const audio = new Float32Array(72000).fill(0.5);
+  audio.fill(-0.5, 24000, 48000);
+  session.segment({ audio, startedAt: 10000, durationMs: 4500, open: false });
+  await session.drain();
+
+  assert.equal(bubbles(events).length, 2, 'both split parts resolved before drain() returned');
+});

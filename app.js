@@ -1,8 +1,10 @@
 // Routes between screens by what is in storage: no consent → consent, no Groq key
 // → settings, no print (or one left by a retired embedding model) → enrollment,
-// else the meeting. The header's settings button is the only way back to settings
-// once past it and always re-routes afterwards instead of remembering where it
-// came from, since those three checks are themselves the whole navigation history.
+// else the meeting. Outside a meeting the header's settings button replaces the
+// current screen and always re-routes on the way back, since those three checks
+// are themselves the whole navigation history. During a meeting it instead opens
+// settings as an overlay on top of #overlay — the meeting in #app is never torn
+// down for a setting, only for the two print-dependent actions that end it first.
 
 import * as store from './store.js';
 import { MODEL_ID } from './embed.js';
@@ -34,15 +36,62 @@ async function loadSettings() {
 const app = document.getElementById('app');
 const header = document.getElementById('header');
 const settingsBtn = document.getElementById('settingsBtn');
+const overlay = document.getElementById('overlay');
 
 let teardown = null;
+// Set only while renderMeeting's screen is the one mounted in #app, so the
+// settings button knows to overlay instead of replace, and so the overlay's own
+// "Volver" has a live settings object (meeting.js reads it on every Groq call,
+// so a change here needs no restart) and a way to end the meeting first.
+let activeMeeting = null;
+let overlayTeardown = null;
+
+function closeOverlay() {
+  if (overlayTeardown) {
+    try { overlayTeardown(); } catch { /* the overlay's own cleanup failed; proceed anyway */ }
+    overlayTeardown = null;
+  }
+  overlay.hidden = true;
+  overlay.textContent = '';
+}
+
 function mount(renderFn, ctx) {
+  closeOverlay();
   if (teardown) {
     try { teardown(); } catch { /* the outgoing screen's own cleanup failed; proceed anyway */ }
     teardown = null;
   }
+  activeMeeting = null;
   const result = renderFn(app, ctx);
   if (typeof result === 'function') teardown = result;
+}
+
+// Ends the running meeting (its own cleanup: capture, the embed worker, Wake
+// Lock, live recognition) without routing anywhere — the caller decides what
+// comes next, since this is also used mid-overlay before a print-dependent
+// settings action.
+function endActiveMeeting() {
+  closeOverlay();
+  if (teardown) {
+    try { teardown(); } catch { /* the meeting's own cleanup failed; proceed anyway */ }
+    teardown = null;
+  }
+  activeMeeting = null;
+}
+
+function openSettingsOverlay() {
+  overlay.hidden = false;
+  const result = renderSettings(overlay, {
+    settings: activeMeeting.settings,
+    forced: false,
+    onBack: closeOverlay,
+    // settings.js calls endMeeting() itself before either print-dependent
+    // action, so by the time onReenroll() runs the meeting is already gone
+    // and route() alone decides what comes next (enrollment, print or not).
+    onReenroll: route,
+    endMeeting: endActiveMeeting,
+  });
+  if (typeof result === 'function') overlayTeardown = result;
 }
 
 async function route() {
@@ -51,16 +100,18 @@ async function route() {
   if (!consent) { mount(renderConsent, { onDone: route }); return; }
 
   const settings = await loadSettings();
-  if (!settings.groqKey) { mount(renderSettings, { settings, forced: true, onDone: route }); return; }
+  if (!settings.groqKey) { mount(renderSettings, { settings, forced: true, onBack: route, onReenroll: route }); return; }
 
   const print = await store.get('print');
   if (!print || print.model !== MODEL_ID) { mount(renderEnroll, { onDone: route }); return; }
 
   mount(renderMeeting, { settings, onEvent: reportEvent });
+  activeMeeting = { settings };
 }
 
 settingsBtn.addEventListener('click', async () => {
-  mount(renderSettings, { settings: await loadSettings(), forced: false, onDone: route });
+  if (activeMeeting) { openSettingsOverlay(); return; }
+  mount(renderSettings, { settings: await loadSettings(), forced: false, onBack: route, onReenroll: route });
 });
 
 app.textContent = 'Cargando…';

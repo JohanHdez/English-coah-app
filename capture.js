@@ -23,7 +23,7 @@ function micError(err) {
   return new Error(`[micrófono] ${err?.message || err}`);
 }
 
-export async function startCapture({ onSegment, onLevel, constraints } = {}) {
+export async function startCapture({ onSegment, onLevel, onBlock, constraints } = {}) {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { ...DEFAULT_CONSTRAINTS, ...constraints } });
@@ -58,10 +58,14 @@ export async function startCapture({ onSegment, onLevel, constraints } = {}) {
     worklet.connect(mute);
     mute.connect(audioContext.destination);
 
-    const segmenter = new Segmenter('mixed', onSegment);
+    // onSegment is optional: enrollment only wants onBlock's raw, ungrouped
+    // blocks, and a live Segmenter with no listener would throw the moment a
+    // phrase actually closed.
+    const segmenter = new Segmenter('mixed', onSegment || (() => {}));
     let paused = false;
     worklet.port.onmessage = ({ data }) => {
       if (onLevel) onLevel(data.rms);
+      if (onBlock) onBlock(data);
       if (paused) return;
       segmenter.push(data);
     };

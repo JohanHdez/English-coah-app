@@ -1,9 +1,11 @@
 // The meeting screen: capture, segment, label, transcribe and translate a live
 // conversation into «Yo / Interlocutor» bubbles. Recording starts the moment this
 // screen mounts — there is no separate "ready" step once enrollment is done — and
-// everything it owns (the worker, the microphone, the wake lock, on-device live
-// recognition) is torn down by the returned cleanup function, since app.js can
-// swap screens at any time (the header's settings button included).
+// stays mounted for the whole meeting: app.js overlays settings on top of it
+// instead of tearing it down (see app.js), so `settings` here is the very same
+// object the overlay edits, and a key/language/translation change reaches the
+// next Groq call with no restart. Only app.js's cleanup() (the two print-
+// dependent settings actions, or real navigation away) fully tears this down.
 
 import { createSession } from '../session.js';
 import { createSpeakers } from '../speaker.js';
@@ -15,7 +17,15 @@ import { foldTranslation, nearBottom } from '../bubbles.js';
 import { MODEL_ID } from '../embed.js';
 import * as store from '../store.js';
 
-const LIVE_LANG = 'en-US';
+// A Web Speech recogniser hears one language. 'multi' (bilingual) meetings hide
+// the live line entirely rather than mis-recognising whichever half it guesses
+// wrong — the same call the extension makes. Read fresh on every (re)start, so
+// a language change from the settings overlay takes effect next time the line
+// is (re)started, without needing to restart the meeting itself.
+function liveLangFor(lang) {
+  if (lang === 'multi') return null;
+  return lang === 'es' ? 'es-ES' : 'en-US';
+}
 
 function createEmbedClient(worker) {
   let seq = 0;
@@ -85,12 +95,19 @@ export function renderMeeting(root, { settings, onEvent }) {
   stopBtn.type = 'button';
   stopBtn.textContent = 'Terminar';
   stopBtn.disabled = true;
-  controls.append(talkBtn, pauseBtn, stopBtn);
+  const newMeetingBtn = document.createElement('button');
+  newMeetingBtn.type = 'button';
+  newMeetingBtn.className = 'primary';
+  newMeetingBtn.textContent = 'Nueva reunión';
+  newMeetingBtn.hidden = true;
+  controls.append(talkBtn, pauseBtn, stopBtn, newMeetingBtn);
   section.append(controls);
 
   root.append(section);
 
+  let wakeLockWarning = false;
   function setStatus(text, kind = 'info') {
+    wakeLockWarning = false;
     statusEl.textContent = text;
     statusEl.hidden = !text;
     statusEl.className = 'status ' + (kind === 'error' ? 'error' : kind === 'ok' ? 'ok' : '');
@@ -106,6 +123,7 @@ export function renderMeeting(root, { settings, onEvent }) {
 
   // --- Transcript rendering ---------------------------------------------------------
   const cache = new Map(); // t -> { text, es, esStale }
+  let restored = []; // entries loaded from a previous, unfinished lastTranscript
   let atBottom = true;
 
   function stickToBottom() {
@@ -135,7 +153,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     flashToast('Corregido');
   }
 
-  function bubbleNode(entry, cacheEntry) {
+  function bubbleNode(entry, cacheEntry, interactive) {
     const div = document.createElement('div');
     div.className = 'bubble ' + (entry.speaker === 'me' ? 'me' : 'them');
     div.dataset.t = String(entry.t);
@@ -176,22 +194,30 @@ export function renderMeeting(root, { settings, onEvent }) {
       }
     }
 
-    div.addEventListener('click', () => correctBubble(entry));
+    // A bubble restored from a previous, unfinished meeting is not in this
+    // session's own transcript: session.correct() would silently no-op on it,
+    // so it is shown as history rather than offered as correctable.
+    if (interactive) div.addEventListener('click', () => correctBubble(entry));
     return div;
   }
 
-  function upsert(entry) {
+  function upsert(entry, { interactive = true } = {}) {
     const next = foldTranslation(cache.get(entry.t), entry.text);
     cache.set(entry.t, next);
-    const node = bubbleNode(entry, next);
+    const node = bubbleNode(entry, next, interactive);
     const old = findBubble(entry.t);
     if (old) old.replaceWith(node); else insertByTime(node, entry.t);
     if (atBottom) stickToBottom();
   }
 
+  function persistTranscript() {
+    store.set('lastTranscript', [...restored, ...session.transcript()]).catch(() => {});
+  }
+
   // --- Live line ---------------------------------------------------------
   let liveHandle = null;
   let liveAvailable = false;
+  let liveToken = 0;
 
   function setLiveText(text) {
     liveTextEl.textContent = text;
@@ -199,19 +225,26 @@ export function renderMeeting(root, { settings, onEvent }) {
   }
 
   async function setupLive(track) {
-    const avail = await liveAvailability(LIVE_LANG);
-    if (destroyed) return;
+    const token = ++liveToken;
+    const lang = liveLangFor(settings.lang);
+    if (!lang) return; // bilingual: a single recogniser cannot hear both languages
+    const avail = await liveAvailability(lang);
+    // The await above can finish after a later pause (or a later setupLive call
+    // from a quick pause/resume) already moved on; the token guards against
+    // starting a recogniser nobody asked for any more.
+    if (destroyed || paused || !running || token !== liveToken) return;
     liveAvailable = avail === 'available';
     if (!liveAvailable) return;
     liveHandle = startLive({
       track,
-      lang: LIVE_LANG,
+      lang,
       onText: setLiveText,
       onError: () => { liveAvailable = false; setLiveText(''); },
     });
   }
 
   function teardownLive() {
+    liveToken++; // invalidates any setupLive() still awaiting liveAvailability
     liveHandle?.stop();
     liveHandle = null;
     liveAvailable = false;
@@ -225,20 +258,26 @@ export function renderMeeting(root, { settings, onEvent }) {
   let wakeLock = null;
   let captureHandle = null;
   let session = null;
+  let worker = null;
+  let embed = null;
+  let modelReady = null;
 
-  const worker = new Worker(new URL('../embed-worker.js', import.meta.url), { type: 'module' });
-  const embed = createEmbedClient(worker);
-  const modelReady = new Promise((resolve, reject) => {
-    const onMsg = ({ data }) => {
-      if (data.type === 'ready') { worker.removeEventListener('message', onMsg); resolve(); }
-      else if (data.type === 'error' && data.id === undefined) {
-        worker.removeEventListener('message', onMsg);
-        reject(new Error(data.message));
-      }
-    };
-    worker.addEventListener('message', onMsg);
-  });
-  worker.postMessage({ type: 'init', base: new URL('../vendor/', import.meta.url).href });
+  function setupWorker() {
+    worker = new Worker(new URL('../embed-worker.js', import.meta.url), { type: 'module' });
+    embed = createEmbedClient(worker);
+    modelReady = new Promise((resolve, reject) => {
+      const onMsg = ({ data }) => {
+        if (data.type === 'ready') { worker.removeEventListener('message', onMsg); resolve(); }
+        else if (data.type === 'error' && data.id === undefined) {
+          worker.removeEventListener('message', onMsg);
+          reject(new Error(data.message));
+        }
+      };
+      worker.addEventListener('message', onMsg);
+    });
+    worker.postMessage({ type: 'init', base: new URL('../vendor/', import.meta.url).href });
+  }
+  setupWorker();
 
   function handleEvent(event) {
     if (destroyed) return;
@@ -246,7 +285,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     if (event.type === 'bubble') {
       upsert(event.entry);
       liveHandle?.reset();
-      store.set('lastTranscript', session.transcript());
+      persistTranscript();
     } else if (event.type === 'error') {
       setStatus(event.text, 'error');
     }
@@ -254,12 +293,14 @@ export function renderMeeting(root, { settings, onEvent }) {
 
   function warnNoWakeLock() {
     setStatus('La pantalla puede apagarse y cortar el micrófono. Mantén la app abierta.', 'error');
+    wakeLockWarning = true;
   }
 
   async function requestWakeLock() {
     if (!('wakeLock' in navigator)) { warnNoWakeLock(); return; }
     try {
       wakeLock = await navigator.wakeLock.request('screen');
+      if (wakeLockWarning) setStatus(running ? 'Grabando…' : '', 'ok');
       wakeLock.addEventListener('release', () => { if (running) warnNoWakeLock(); });
     } catch {
       warnNoWakeLock();
@@ -312,7 +353,49 @@ export function renderMeeting(root, { settings, onEvent }) {
     });
     await startRecording();
   }
-  init();
+
+  async function beginMeeting(restoredEntries) {
+    restored = restoredEntries;
+    for (const entry of restored) upsert(entry, { interactive: false });
+    await init();
+  }
+
+  function showResumeChooser(saved) {
+    const chooser = document.createElement('div');
+    chooser.className = 'resume-chooser';
+    const p = document.createElement('p');
+    p.textContent = 'Tienes una conversación sin terminar.';
+    const row = document.createElement('div');
+    row.className = 'controls';
+    const continueBtn = document.createElement('button');
+    continueBtn.type = 'button';
+    continueBtn.className = 'primary';
+    continueBtn.textContent = 'Continuar';
+    const freshBtn = document.createElement('button');
+    freshBtn.type = 'button';
+    freshBtn.textContent = 'Nueva reunión';
+    row.append(continueBtn, freshBtn);
+    chooser.append(p, row);
+    section.insertBefore(chooser, transcriptEl);
+
+    continueBtn.addEventListener('click', () => {
+      chooser.remove();
+      beginMeeting(saved);
+    });
+    freshBtn.addEventListener('click', async () => {
+      chooser.remove();
+      await store.del('lastTranscript').catch(() => {});
+      beginMeeting([]);
+    });
+  }
+
+  async function boot() {
+    const saved = await store.get('lastTranscript');
+    if (destroyed) return;
+    if (Array.isArray(saved) && saved.length) showResumeChooser(saved);
+    else await beginMeeting([]);
+  }
+  boot();
 
   // --- Controls ---------------------------------------------------------
   talkBtn.addEventListener('click', () => {
@@ -345,7 +428,28 @@ export function renderMeeting(root, { settings, onEvent }) {
     const handle = captureHandle;
     captureHandle = null;
     if (handle) await handle.stop();
-    if (!destroyed) setStatus('Reunión terminada.');
+    // Pending embeds and Groq calls (including the segment stop() just flushed)
+    // are still in flight: wait for every bubble they produce before the worker
+    // that embeds them is freed and the screen calls itself finished.
+    if (session) await session.drain();
+    if (destroyed) return;
+    worker.terminate();
+    setStatus('Reunión terminada.');
+    newMeetingBtn.hidden = false;
+  });
+
+  newMeetingBtn.addEventListener('click', async () => {
+    newMeetingBtn.hidden = true;
+    transcriptEl.textContent = '';
+    cache.clear();
+    talkBtn.setAttribute('aria-pressed', 'false');
+    talkBtn.classList.remove('on');
+    pauseBtn.textContent = 'Pausar';
+    paused = false;
+    setStatus('');
+    await store.del('lastTranscript').catch(() => {});
+    setupWorker();
+    await beginMeeting([]);
   });
 
   return function cleanup() {

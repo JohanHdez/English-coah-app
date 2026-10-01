@@ -1,15 +1,20 @@
 // Voice enrollment: read ENROLL_TEXT aloud, embed overlapping windows of the
 // recording, average them into one print, and store it. Recording goes through
-// capture.js but keeps the raw samples itself rather than the Segmenter's
-// phrase-by-phrase output — enrollment wants one continuous take, not conversational
-// turn detection — so onSegment here only collects, nothing is transcribed.
+// capture.js's onBlock — every raw 100 ms block of the continuous take, not the
+// Segmenter's phrase-by-phrase output — so there is no preroll, no trailing
+// silence and no MIN_SEG_MS floor biasing either the voiced-audio gate or the
+// audio handed to windows()/embed. Its own constraints restate capture.js's
+// defaults explicitly, since enrollment does not want them to drift silently
+// if the defaults for a live meeting ever change.
 
 import { startCapture } from '../capture.js';
 import { windows, MODEL_ID } from '../embed.js';
 import { meanOf } from '../speaker.js';
 import { ENROLL_TEXT } from '../enroll-text.js';
-import { totalVoicedMs, concatSegments } from '../enroll-audio.js';
+import { voicedMs, concatBlocks } from '../enroll-audio.js';
 import * as store from '../store.js';
+
+const CONSTRAINTS = { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 };
 
 // The brief's spec is a 25 s countdown; stretched to 30 s so a normal reading
 // pace (measured 29–36 s for ENROLL_TEXT) finishes inside it rather than racing
@@ -128,7 +133,7 @@ export function renderEnroll(root, { onDone }) {
   // --- Recording state ---------------------------------------------------
   let phase = 'idle'; // idle | recording | processing | tooShort
   let captureHandle = null;
-  let segments = [];
+  let blocks = [];
   let elapsedSec = 0;
   let countdownTimer = null;
 
@@ -157,12 +162,12 @@ export function renderEnroll(root, { onDone }) {
     setStatus('Procesando tu voz…');
     if (handle) await handle.stop();
 
-    const voicedMs = totalVoicedMs(segments);
-    const audio = concatSegments(segments);
-    segments = [];
+    const voiced = voicedMs(blocks);
+    const audio = concatBlocks(blocks);
+    blocks = [];
     finishing = false;
 
-    if (voicedMs < MIN_VOICED_MS) {
+    if (voiced < MIN_VOICED_MS) {
       setPhase('tooShort');
       setStatus('No te oí lo suficiente. Acércate al teléfono y repite.', 'error');
       return;
@@ -184,12 +189,13 @@ export function renderEnroll(root, { onDone }) {
   startBtn.addEventListener('click', async () => {
     if (!modelReady || phase !== 'idle') return;
     setStatus('');
-    segments = [];
+    blocks = [];
     elapsedSec = 0;
     try {
       captureHandle = await startCapture({
-        onSegment: (seg) => segments.push(seg),
+        onBlock: (block) => blocks.push(block),
         onLevel: (rms) => { levelFill.style.width = `${Math.min(100, Math.round(rms * 300))}%`; },
+        constraints: CONSTRAINTS,
       });
     } catch (err) {
       setStatus(err?.message || String(err), 'error');

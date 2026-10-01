@@ -1,8 +1,13 @@
-// App-shell cache only. Model files (vendor/, Hugging Face) are cached by
-// transformers.js itself (large, content-addressed, fetched on demand) and Groq
-// responses must never be cached (they carry the meeting's audio transcript), so the
-// fetch handler below writes to the cache only for the exact URLs in SHELL_FILES —
-// every other same-origin GET is left for the browser to fetch normally, uncached.
+// App-shell cache only. Hugging Face's model weights are cached by
+// transformers.js itself (env.useBrowserCache, large and content-addressed,
+// fetched on demand). vendor/ (transformers.js, the ONNX Runtime WASM) is
+// same-origin but deliberately left out of SHELL_FILES below — large, and only
+// needed once enrollment or a meeting actually runs — so an offline cold start
+// cannot load the voice model unless the browser's own HTTP cache still happens
+// to hold those files. Groq responses must never be cached (they carry the
+// meeting's audio transcript), so the fetch handler below writes to the cache
+// only for the exact URLs in SHELL_FILES — every other same-origin GET is left
+// for the browser to fetch normally, uncached.
 const CACHE_NAME = 'ec-shell-v2';
 const SHELL_FILES = [
   './',

@@ -225,5 +225,16 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
     return true;
   }
 
-  return { segment, setManual, correct, transcript: () => transcript };
+  // Resolves once every segment handed to segment() so far has been embedded,
+  // labelled, transcribed and painted (or has failed into an error event) — in
+  // that order, since emitChain only grows from inside labelChain's own
+  // callbacks. A caller that wants a clean "every pending bubble has landed"
+  // point (ui/meeting.js's "Terminar", after capture.js's stop() has
+  // synchronously flushed the last phrase into one more segment()) awaits this
+  // before treating the session as finished.
+  function drain() {
+    return labelChain.then(() => emitChain);
+  }
+
+  return { segment, setManual, correct, transcript: () => transcript, drain };
 }

@@ -1,8 +1,13 @@
 // Groq key, meeting language, translation toggle, and the three destructive
 // actions. Reached either as the forced step between consent and enrollment (no
-// Groq key yet — app.js routes here) or from the header's settings button at any
-// other time, which is why every field saves itself as it changes rather than
-// waiting on a single submit.
+// Groq key yet — app.js routes here), from the header's settings button between
+// meetings, or — endMeeting present — as an overlay on top of a running meeting,
+// which is why every field saves itself as it changes rather than waiting on a
+// single submit: `settings` is the very object the live session reads from, so a
+// key, language or translation change here reaches its next Groq call with no
+// restart. The print a running meeting's speaker state depends on cannot change
+// out from under it, so when endMeeting is given, re-enrolling or deleting the
+// print ends the meeting first (confirmed) before either touches the print.
 
 import * as store from '../store.js';
 
@@ -15,7 +20,7 @@ function field(labelText, input) {
   return label;
 }
 
-export function renderSettings(root, { settings, forced, onDone }) {
+export function renderSettings(root, { settings, forced, onBack, onReenroll, endMeeting }) {
   root.textContent = '';
 
   const section = document.createElement('section');
@@ -90,14 +95,14 @@ export function renderSettings(root, { settings, forced, onDone }) {
     continueBtn.className = 'primary';
     continueBtn.textContent = 'Continuar';
     continueBtn.disabled = !keyInput.value.trim();
-    continueBtn.addEventListener('click', () => onDone());
+    continueBtn.addEventListener('click', () => onBack());
     section.append(continueBtn);
   } else {
     const backBtn = document.createElement('button');
     backBtn.type = 'button';
     backBtn.className = 'primary';
     backBtn.textContent = 'Volver';
-    backBtn.addEventListener('click', () => onDone());
+    backBtn.addEventListener('click', () => onBack());
     section.append(backBtn);
   }
 
@@ -109,9 +114,13 @@ export function renderSettings(root, { settings, forced, onDone }) {
   reenroll.type = 'button';
   reenroll.textContent = 'Volver a registrar mi voz';
   reenroll.addEventListener('click', async () => {
-    if (!confirm('¿Borrar tu huella de voz y registrarla de nuevo ahora?')) return;
+    const msg = endMeeting
+      ? '¿Terminar la reunión en curso y registrar tu voz de nuevo? La huella actual se borrará.'
+      : '¿Borrar tu huella de voz y registrarla de nuevo ahora?';
+    if (!confirm(msg)) return;
+    if (endMeeting) await endMeeting();
     await store.del('print');
-    onDone();
+    onReenroll();
   });
   danger.append(reenroll);
 
@@ -119,6 +128,13 @@ export function renderSettings(root, { settings, forced, onDone }) {
   deletePrint.type = 'button';
   deletePrint.textContent = 'Borrar mi huella de voz';
   deletePrint.addEventListener('click', async () => {
+    if (endMeeting) {
+      if (!confirm('¿Terminar la reunión en curso y borrar tu huella de voz?')) return;
+      await endMeeting();
+      await store.del('print');
+      onReenroll(); // no print left: the next screen is enrollment either way
+      return;
+    }
     if (!confirm('¿Borrar tu huella de voz? Tendrás que registrarla de nuevo para la próxima reunión.')) return;
     await store.del('print');
     setNotice('Huella de voz borrada.');
