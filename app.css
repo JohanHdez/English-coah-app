@@ -1,9 +1,12 @@
 :root {
   --bg: #111418;
   --text: #e8eaed;
+  --muted: #9aa0a6;
   --accent: #1a73e8;
+  --danger: #e8606a;
   --bubble-me: #1e3a5f;
   --bubble-them: #202124;
+  --border: #2d3135;
 }
 
 * {
@@ -17,22 +20,13 @@ body {
 
 body {
   margin: 0;
+  display: flex;
+  flex-direction: column;
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 16px;
   line-height: 1.4;
-}
-
-#app {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 1.5rem 16px;
-}
-
-h1 {
-  font-size: 1.5rem;
-  margin: 0 0 0.5rem;
 }
 
 a {
@@ -47,10 +41,295 @@ button {
   border-radius: 8px;
   padding: 0.75rem 1rem;
   min-height: 44px;
+  min-width: 44px;
   cursor: pointer;
 }
 
 button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+input,
+select {
+  font: inherit;
+  color: var(--text);
+  background: #1b1f24;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  min-height: 44px;
+}
+
+/* ------------------------------------------------------------------ header */
+
+#header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0.75rem 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+#header .brand {
+  font-weight: 600;
+}
+
+.icon-btn {
+  background: transparent;
+  font-size: 1.25rem;
+  padding: 0.4rem;
+}
+
+/* -------------------------------------------------------------------- app */
+
+#app {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.screen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 1.25rem 16px;
+}
+
+.screen h1 {
+  font-size: 1.4rem;
+  margin: 0 0 0.25rem;
+}
+
+/* --------------------------------------------------------------- consent */
+
+.consent p {
+  color: var(--muted);
+}
+
+/* -------------------------------------------------------------- settings */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.field > span,
+.field > legend {
+  font-size: 0.9rem;
+  color: var(--muted);
+  padding: 0;
+}
+
+.radio,
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 44px;
+}
+
+.radio input,
+.checkbox input {
+  min-height: auto;
+  width: 22px;
+  height: 22px;
+}
+
+.danger-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.danger-zone button {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+
+.notice {
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------- enroll */
+
+.enroll-text {
+  font-size: 1.15rem;
+  line-height: 1.6;
+  background: #1b1f24;
+  border-radius: 12px;
+  padding: 1rem;
+}
+
+.level-bar {
+  height: 12px;
+  border-radius: 6px;
+  background: #1b1f24;
+  overflow: hidden;
+}
+
+.level-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.1s linear;
+}
+
+.countdown {
+  font-size: 1.5rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  margin: 0;
+}
+
+/* --------------------------------------------------------------- shared */
+
+.status {
+  margin: 0;
+  color: var(--muted);
+}
+
+.status.ok {
+  color: #81c995;
+}
+
+.status.error {
+  color: var(--danger);
+}
+
+.controls {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.controls button {
+  flex: 1;
+}
+
+button.primary {
+  background: var(--accent);
+}
+
+/* --------------------------------------------------------------- meeting */
+
+.meeting {
+  padding-bottom: calc(1.25rem + env(safe-area-inset-bottom));
+}
+
+.transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+}
+
+.bubble {
+  max-width: 85%;
+  border-radius: 14px;
+  padding: 0.6rem 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  cursor: pointer;
+}
+
+.bubble.me {
+  align-self: flex-end;
+  background: var(--bubble-me);
+}
+
+.bubble.them {
+  align-self: flex-start;
+  background: var(--bubble-them);
+}
+
+.bubble .meta {
+  font-size: 0.75rem;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.lang-tag {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+}
+
+.bubble .text {
+  white-space: pre-wrap;
+}
+
+.bubble .es {
+  font-size: 0.9rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.bubble .es.stale {
+  opacity: 0.6;
+}
+
+.live-line {
+  font-size: 0.9rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.live-label {
+  font-style: italic;
+}
+
+.toast {
+  position: fixed;
+  bottom: calc(5.5rem + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  background: #2d3135;
+  color: var(--text);
+  padding: 0.5rem 1rem;
+  border-radius: 999px;
+  margin: 0;
+  font-size: 0.85rem;
+  z-index: 10;
+}
+
+.talk-toggle.on {
+  background: var(--danger);
+}
+
+/* -------------------------------------------------------------- desktop */
+
+@media (min-width: 480px) {
+  .screen {
+    padding: 1.5rem 24px;
+  }
 }

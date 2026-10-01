@@ -3,12 +3,30 @@
 // responses must never be cached (they carry the meeting's audio transcript), so the
 // fetch handler below writes to the cache only for the exact URLs in SHELL_FILES —
 // every other same-origin GET is left for the browser to fetch normally, uncached.
-const CACHE_NAME = 'ec-shell-v1';
+const CACHE_NAME = 'ec-shell-v2';
 const SHELL_FILES = [
   './',
   'index.html',
   'app.css',
   'app.js',
+  'store.js',
+  'translate.js',
+  'bubbles.js',
+  'enroll-audio.js',
+  'capture.js',
+  'session.js',
+  'speaker.js',
+  'embed.js',
+  'embed-worker.js',
+  'enroll-text.js',
+  'transcribe.js',
+  'recorder-worklet.js',
+  'ui/consent.js',
+  'ui/settings.js',
+  'ui/enroll.js',
+  'ui/meeting.js',
+  'lib/live.js',
+  'lib/segmenter.js',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png',
