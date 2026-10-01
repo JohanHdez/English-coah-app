@@ -20,16 +20,47 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
   let seq = 0;
   const nextId = () => seq++;
 
+  // Isolates one onEvent call: a throwing listener (a UI bug) must not corrupt
+  // the chains below, and must not stop later segments from painting.
+  function safeEmit(event) {
+    try {
+      onEvent(event);
+    } catch {
+      // Nothing useful to do with a broken event sink; swallowing here is what
+      // keeps the pipeline itself alive.
+    }
+  }
+
+  function emitError(err) {
+    safeEmit({ type: 'error', text: err?.message || String(err) });
+  }
+
   // Embed + classify/assign run one at a time, in capture order: classify()
   // keeps running centre sums, so deciding segment N+1 before N recorded its
   // vote would make the centres (and which ids a correction later touches)
   // depend on network timing instead of capture order. The transcription call
   // itself is not on this chain, so a slow Groq response never blocks the next
-  // segment's speaker decision.
+  // segment's speaker decision. Every link below catches its own failure: a
+  // bare `.then` chain turns one rejection into a permanently rejected chain,
+  // silently dropping every segment queued after it.
   let labelChain = Promise.resolve();
   // Bubbles are painted in this same order, independent of how fast each
   // transcription actually comes back (see withLimit below).
   let emitChain = Promise.resolve();
+
+  // Chains `task` onto emitChain so it still runs after every previously
+  // queued task, in capture order, but a failure inside `task` (a transcribe
+  // rejection forwarded as a throw, or anything fold-related going wrong)
+  // becomes an error event instead of poisoning every emission queued after it.
+  function queueEmit(task) {
+    emitChain = emitChain.then(async () => {
+      try {
+        await task();
+      } catch (err) {
+        emitError(err);
+      }
+    });
+  }
 
   let active = 0;
   const MAX_INFLIGHT = 2;
@@ -50,10 +81,10 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
     });
   }
 
-  function labelUnit(id, vector) {
-    if (manual) {
-      assign(speakers, id, vector, manual);
-      return manual;
+  function labelUnit(id, vector, manualSpeaker) {
+    if (manualSpeaker) {
+      assign(speakers, id, vector, manualSpeaker);
+      return manualSpeaker;
     }
     return classify(speakers, id, vector).speaker;
   }
@@ -78,40 +109,71 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
         e.segs = [id]; // the cut's freshly opened tail
       }
     }
-    for (const e of painted) onEvent({ type: 'bubble', entry: e });
+    for (const e of painted) safeEmit({ type: 'bubble', entry: e });
   }
 
   // One audio stretch through embed -> classify/assign -> transcribe -> fold.
-  function labelAndDispatch({ audio, startedAt, durationMs }) {
+  // `manualSpeaker` is the mode in force when the *segment* was captured (see
+  // segment() below), not whenever this async chain happens to reach it.
+  async function labelAndDispatch({ audio, startedAt, durationMs }, manualSpeaker) {
     const id = nextId();
-    return embed(audio).then(
-      (vector) => {
-        const speaker = labelUnit(id, vector);
-        const transcribed = withLimit(() => transcribe(audio));
-        emitChain = emitChain.then(async () => {
-          const outcome = await transcribed;
-          if (!outcome.ok) {
-            onEvent({ type: 'error', text: outcome.error?.message || String(outcome.error) });
-            return;
-          }
-          const result = outcome.value;
-          if (isJunk(result.text)) return;
-          foldAndEmit(speaker, result.text, startedAt, durationMs, result.lang, id);
-        });
-      },
-      (err) => {
-        emitChain = emitChain.then(() => {
-          onEvent({ type: 'error', text: err?.message || String(err) });
-        });
-      },
-    );
+    let speaker;
+    try {
+      const vector = await embed(audio);
+      speaker = labelUnit(id, vector, manualSpeaker);
+    } catch (err) {
+      queueEmit(() => { throw err; });
+      return;
+    }
+    const transcribed = withLimit(() => transcribe(audio));
+    queueEmit(async () => {
+      const outcome = await transcribed;
+      if (!outcome.ok) throw outcome.error;
+      const result = outcome.value;
+      if (isJunk(result.text)) return;
+      foldAndEmit(speaker, result.text, startedAt, durationMs, result.lang, id);
+    });
   }
 
-  // Re-scans a long segment in overlapping windows and, if two consecutive
-  // windows disagree with the majority, splits the audio there. `.slice()`
-  // (not `.subarray()`) gives each part its own buffer: the real embed/transcribe
-  // functions transfer their input's buffer to a worker or into a fetch body,
-  // and transferring a *view* detaches the whole shared buffer underneath it.
+  // Groups consecutive equal labels; `startIdx` is the index into `labels`
+  // (and `starts`) where the run begins.
+  function runsOf(labels) {
+    const runs = [];
+    for (let i = 0; i < labels.length; i++) {
+      const last = runs.at(-1);
+      if (last && last.label === labels[i]) last.length++;
+      else runs.push({ label: labels[i], length: 1, startIdx: i });
+    }
+    return runs;
+  }
+
+  // Folds a run shorter than two windows into a neighbour (left when one
+  // exists, otherwise right) so an isolated window cannot register as a
+  // handoff — alternating labels (me/them/me/them) would otherwise explode
+  // into a split at every window instead of staying one segment.
+  function mergeShortRuns(runs) {
+    const r = runs.map((x) => ({ ...x }));
+    while (r.length > 1) {
+      const i = r.findIndex((x) => x.length < 2);
+      if (i < 0) break;
+      if (i > 0) {
+        r[i - 1].length += r[i].length;
+        r.splice(i, 1);
+      } else {
+        r[1] = { label: r[1].label, length: r[0].length + r[1].length, startIdx: r[0].startIdx };
+        r.splice(0, 1);
+      }
+    }
+    return r;
+  }
+
+  // Re-scans a long segment in overlapping windows and, once short runs are
+  // folded away, splits at the boundary between the first two surviving runs —
+  // whichever side (the opening voice or the one that follows) is the
+  // majority. `.slice()` (not `.subarray()`) gives each part its own buffer:
+  // the real embed/transcribe functions transfer their input's buffer to a
+  // worker or into a fetch body, and transferring a *view* detaches the whole
+  // shared buffer underneath it.
   async function splitIfNeeded(seg) {
     const winSamples = Math.round(WIN_SECS * SR);
     const hopSamples = Math.round(HOP_SECS * SR);
@@ -124,16 +186,10 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
     if (vectors.length < 3) return [seg];
 
     const labels = labelWindows(speakers, vectors);
-    const counts = { me: 0, them: 0 };
-    for (const l of labels) counts[l]++;
-    const majority = counts.them > counts.me ? 'them' : 'me';
+    const runs = mergeShortRuns(runsOf(labels));
+    if (runs.length < 2) return [seg];
 
-    let splitAt = -1;
-    for (let i = 0; i < labels.length - 1; i++) {
-      if (labels[i] !== majority && labels[i + 1] !== majority) { splitAt = starts[i]; break; }
-    }
-    if (splitAt <= 0) return [seg];
-
+    const splitAt = starts[runs[1].startIdx];
     const firstMs = (splitAt / SR) * 1000;
     return [
       { audio: seg.audio.slice(0, splitAt), startedAt: seg.startedAt, durationMs: firstMs },
@@ -142,9 +198,17 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
   }
 
   function segment(seg) {
+    // Manual mode is a real-time toggle: the speaker in force while this audio
+    // was actually captured must stick with it, not whatever is on by the time
+    // its embedding (an async step, possibly after a 5b split) finishes.
+    const manualAtCapture = manual;
     labelChain = labelChain.then(async () => {
-      const parts = seg.durationMs >= SPLIT_MIN_MS ? await splitIfNeeded(seg) : [seg];
-      for (const part of parts) await labelAndDispatch(part);
+      try {
+        const parts = seg.durationMs >= SPLIT_MIN_MS ? await splitIfNeeded(seg) : [seg];
+        for (const part of parts) await labelAndDispatch(part, manualAtCapture);
+      } catch (err) {
+        queueEmit(() => { throw err; });
+      }
     });
   }
 
@@ -157,7 +221,7 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
     if (!entry) return false;
     entry.speaker = speaker;
     for (const id of entry.segs || []) correctSpeaker(speakers, id, speaker);
-    onEvent({ type: 'bubble', entry });
+    safeEmit({ type: 'bubble', entry });
     return true;
   }
 

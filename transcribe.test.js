@@ -105,6 +105,36 @@ test('a missing key fails before any network call', async () => {
   }
 });
 
+// Fix round 1, finding 9: these two paths forwarded the native error message
+// (`TypeError: Failed to fetch`, a `SyntaxError` from a malformed body) with no
+// stage prefix, so they reached the UI looking unlike every other Groq failure.
+test('a network failure is reported with the [groq] prefix', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  try {
+    await assert.rejects(
+      () => transcribeGroq(samples, { key: 'gsk_test' }),
+      (err) => { assert.ok(err.message.startsWith('[groq]'), err.message); return true; },
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('a malformed response body is reported with the [groq] prefix', async () => {
+  const restore = stubGroq({}, () => ({
+    ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token'); },
+  }));
+  try {
+    await assert.rejects(
+      () => transcribeGroq(samples, { key: 'gsk_test' }),
+      (err) => { assert.ok(err.message.startsWith('[groq]'), err.message); return true; },
+    );
+  } finally {
+    restore();
+  }
+});
+
 test('redact hides every key shape without touching the rest of the text', () => {
   assert.equal(redact('key is gsk_AbC123xyz here'), 'key is «API key oculta» here');
   assert.equal(redact('key is sk-AbC123xyz here'), 'key is «API key oculta» here');

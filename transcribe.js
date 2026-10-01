@@ -29,13 +29,23 @@ export async function transcribeGroq(samples, { key, base = DEFAULT_BASE, model 
   // so the caller falls back to null (lib/langid.js decides from the text itself).
   form.append('response_format', multi ? 'verbose_json' : 'json');
 
-  const res = await fetch(`${baseOf(base)}/openai/v1/audio/transcriptions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}` },
-    body: form,
-  });
+  let res;
+  try {
+    res = await fetch(`${baseOf(base)}/openai/v1/audio/transcriptions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}` },
+      body: form,
+    });
+  } catch (err) {
+    throw new Error(`[groq] No se pudo contactar con Groq: ${redact(err?.message || String(err))}`);
+  }
   if (!res.ok) throw new Error(`[groq] Groq ${res.status}: ${redact(await res.text()).slice(0, 200)}`);
-  const data = await res.json();
+  let data;
+  try {
+    data = await res.json();
+  } catch (err) {
+    throw new Error(`[groq] Respuesta de Groq inválida: ${redact(err?.message || String(err))}`);
+  }
   const reported = typeof data.language === 'string' ? data.language.toLowerCase() : '';
   // Whisper names languages in English words ("spanish"), not codes.
   const detected = /^(es|spa|spanish|castilian|español)$/.test(reported) ? 'es'

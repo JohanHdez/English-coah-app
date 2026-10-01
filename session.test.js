@@ -182,3 +182,116 @@ test('a 4.5 s segment that switches speaker midway is split at the disagreement'
   assert.equal(bs[1].entry.speaker, 'them');
   assert.equal(bs[1].entry.t, 10000 + (24000 / 16000) * 1000, 'the second part starts at the split offset');
 });
+
+// Fix round 1, finding 2: the previous scan only looked for two consecutive
+// *non-majority* windows, so a segment that opens with the shorter run (the
+// minority) put the disagreement at window 0 and `splitAt <= 0` bailed out —
+// the most common handoff (a short turn, then a longer one) never split.
+test('a leading short turn followed by a longer one still splits, minority first', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const transcribe = fakeTranscribe([{}, {}]);
+  const session = createSession({ embed: fakeEmbed, transcribe, speakers, onEvent });
+
+  // 4.5 s @ 16 kHz = 72000 samples, windows at 0, 12000, 24000, 36000, 48000.
+  // First 1.5 s (24000 samples) is the learner; the rest is the other voice:
+  // window labels [me, me, them, them, them] — majority is 'them', but the
+  // handoff is still the boundary after window 1.
+  const audio = new Float32Array(72000).fill(0.5);
+  audio.fill(-0.5, 24000);
+  session.segment({ audio, startedAt: 0, durationMs: 4500, open: false });
+  await sleep(20);
+
+  const bs = bubbles(events);
+  assert.equal(bs.length, 2, 'a leading minority run must still produce a split');
+  assert.equal(bs[0].entry.speaker, 'me');
+  assert.equal(bs[0].entry.t, 0);
+  assert.equal(bs[1].entry.speaker, 'them');
+  assert.equal(bs[1].entry.t, (24000 / 16000) * 1000);
+});
+
+test('alternating window labels do not explode into a split', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const transcribe = fakeTranscribe([{}]);
+  const session = createSession({ embed: fakeEmbed, transcribe, speakers, onEvent });
+
+  // Same 4.5 s / 5-window layout, but the sign (and so the label) flips at
+  // every window start (0, 12000, 24000, 36000, 48000): every run is one
+  // window long, so none of them should register as a real handoff.
+  const audio = new Float32Array(72000);
+  const signPerChunk = [0.5, -0.5, 0.5, -0.5, 0.5, 0.5]; // 6 chunks of 12000 samples
+  signPerChunk.forEach((sign, c) => audio.fill(sign, c * 12000, (c + 1) * 12000));
+  session.segment({ audio, startedAt: 0, durationMs: 4500, open: false });
+  await sleep(20);
+
+  assert.equal(bubbles(events).length, 1, 'alternating windows must stay one segment');
+});
+
+// Fix round 1, finding 1: a failure anywhere in the pipeline must emit an
+// error and let later segments through, instead of poisoning the chains that
+// serialize labelling (labelChain) and emission (emitChain).
+test('an embed that rejects during the 5b window scan does not stop later segments', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  let calls = 0;
+  const flakyEmbed = async (audio) => {
+    calls++;
+    if (calls === 1) throw new Error('[huella] boom');
+    return audio[0] > 0 ? ME_LIKE : THEM_LIKE;
+  };
+  const transcribe = fakeTranscribe([{}]);
+  const session = createSession({ embed: flakyEmbed, transcribe, speakers, onEvent });
+
+  session.segment({ audio: new Float32Array(72000).fill(0.5), startedAt: 0, durationMs: 4500, open: false });
+  session.segment(seg('me', 5000));
+  await sleep(20);
+
+  assert.equal(events.filter((e) => e.type === 'error').length, 1);
+  const bs = bubbles(events);
+  assert.equal(bs.length, 1);
+  assert.equal(bs[0].entry.speaker, 'me');
+});
+
+test("an onEvent that throws once does not stop the next segment's bubble", async () => {
+  const events = [];
+  let threw = false;
+  const onEvent = (e) => {
+    if (!threw) { threw = true; throw new Error('ui bug'); }
+    events.push(e);
+  };
+  const speakers = createSpeakers(ME_LIKE);
+  const transcribe = fakeTranscribe([{}, {}]);
+  const session = createSession({ embed: fakeEmbed, transcribe, speakers, onEvent });
+
+  session.segment(seg('me', 0));
+  session.segment(seg('them', 1000));
+  await sleep(20);
+
+  const bs = bubbles(events);
+  assert.equal(bs.length, 1, "only the second segment's event got through the broken sink");
+  assert.equal(bs[0].entry.speaker, 'them');
+  assert.equal(session.transcript().length, 2, 'both segments still landed in the transcript itself');
+});
+
+// Fix round 1, finding 5: manual mode must be read when the segment is
+// captured, not whenever its (async) embedding happens to resolve.
+test('manual mode is captured at segment() time, not when the embedding resolves', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const slowEmbed = async (audio) => { await gate; return audio[0] > 0 ? ME_LIKE : THEM_LIKE; };
+  const transcribe = fakeTranscribe([{}]);
+  const session = createSession({ embed: slowEmbed, transcribe, speakers, onEvent });
+
+  session.setManual('me');
+  session.segment(seg('them', 0)); // embeds as the other voice, but "soy yo" is on
+  session.setManual(null); // toggled off before the embedding (and labelling) happen
+  release();
+  await sleep(20);
+
+  const bs = bubbles(events);
+  assert.equal(bs.length, 1);
+  assert.equal(bs[0].entry.speaker, 'me', 'the mode in force at capture time must win');
+});
