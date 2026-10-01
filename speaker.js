@@ -2,12 +2,17 @@
 // other voice has no print, so its centre is learnt from the turns assigned to it.
 
 // Similarity to the learner's centre above which a turn is the learner's before
-// any other voice is known (and, under 'hybrid', always). Calibrated by e2e/speakers.mjs
-// on 2026-09-29: over 280 clean full turns, learner turns scored 0.394–0.937 against
-// the print (p10 0.596) and other voices -0.053–0.558 (p90 0.373); 0.39 is the
-// accuracy optimum there (96 %). Under 'centres', room, 2 s crops, same-gender pairs:
-// 94 % (hybrid and threshold 84 %); one pairing never grows an other centre at 0.39.
-export const MATCH_MIN = 0.39;
+// any other voice is known (and, under 'hybrid', always). Under 'centres' this only
+// decides turns before the other voice has a centre, so it is calibrated for that
+// rule rather than for raw print-vs-print accuracy. Calibrated by e2e/speakers.mjs
+// on 2026-09-30, sweeping 0.30–0.70 under 'centres', clean accuracy averaged over
+// both meeting orderings (opens with the other voice, and rotated to open on the
+// learner): 100 % over the whole 0.54–0.68 plateau; 0.61 is its middle. Room, both
+// orderings, every duration (1/2/4 s, full), same-gender, cross-gender and the
+// Spanish pair: 100 %, no centre poisoned either way, worst single pair 100 %. A
+// per-learner threshold from enrollment similarity tied this on the same room
+// metric, so the simpler global constant was kept.
+export const MATCH_MIN = 0.61;
 // The print outweighs any single turn, so one misassigned turn cannot drag the
 // learner's centre toward the other voice.
 export const PRINT_WEIGHT = 3;

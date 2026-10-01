@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalize, cosine, meanOf, createSpeakers, classify, assign, correct, labelWindows, MATCH_MIN } from './speaker.js';
+import { normalize, cosine, meanOf, createSpeakers, classify, assign, correct, labelWindows } from './speaker.js';
 
 const near = (a, b) => Math.abs(a - b) < 1e-6;
 const ME = [1, 0, 0];
@@ -26,12 +26,14 @@ test('before any other voice is known, the threshold decides', () => {
 });
 
 test('once the other voice has a centre, the nearer centre decides', () => {
-  const s = createSpeakers(ME, { rule: 'centres' });
+  // An explicit threshold, not the calibrated default: the point is the override,
+  // not the module's current constant.
+  const s = createSpeakers(ME, { rule: 'centres', threshold: 0.5 });
   classify(s, 'b', THEM);
   // Closer to the other voice than to the print, although above the threshold.
   const r = classify(s, 'c', normalize([0.6, 0.8, 0]));
   assert.equal(r.speaker, 'them');
-  assert.ok(r.me >= MATCH_MIN);
+  assert.ok(r.me >= s.threshold);
 });
 
 test('hybrid: a turn clearly matching the print is mine whatever the other centre says', () => {

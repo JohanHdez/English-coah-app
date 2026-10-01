@@ -155,12 +155,13 @@ const acc = (decisions, filter = () => true) => {
   return ds.length ? ds.filter((x) => x.speaker === x.truth).length / ds.length : NaN;
 };
 
-function evaluateAll(runs, threshold) {
+function evaluateAll(runs, threshold, rules = RULES) {
   const out = [];
   for (const r of runs) {
+    const t = typeof threshold === 'function' ? threshold(r) : threshold;
     for (const d of DURATIONS) {
-      for (const rule of RULES) {
-        const { decisions, poisoned, absorbed, orphan, swallowed } = replay(r, d, rule, threshold);
+      for (const rule of rules) {
+        const { decisions, poisoned, absorbed, orphan, swallowed } = replay(r, d, rule, t);
         out.push({
           name: r.name, learner: r.learner, other: r.other, condition: r.condition, group: group(r.other), d, rule,
           accuracy: acc(decisions), long: acc(decisions, (x) => x.seconds >= 2),
@@ -289,6 +290,157 @@ function printSensitivity(runs, thresholds) {
   }
 }
 
+
+// ---- rule-aware calibration -------------------------------------------------
+// Under 'centres' the threshold only decides turns before the other voice has a
+// centre, so it is chosen by the accuracy of 'centres' itself: clean fixtures,
+// all four durations pooled. Of the best accuracy, the widest flat run of
+// candidates wins and its middle is taken.
+
+const CAL_RULE = 'centres';
+const steps = (from, to, step) => Array.from({ length: Math.round((to - from) / step) + 1 }, (_, i) => Math.round((from + i * step) * 100) / 100);
+
+// A meeting can open with either speaker. Every fixture happens to open with the
+// other voice, which hands 'centres' a free correct first centre; rotating to the
+// first learner turn is the one case where the learner's own threshold is what
+// decides. Calibrating on the mean of both orderings picks a value that holds up
+// either way a real meeting starts, not just the one the fixtures happen to use.
+function rotateToLearner(run) {
+  const first = run.cues.findIndex((c) => c.truth === 'me');
+  if (first <= 0) return run;
+  return { ...run, cues: [...run.cues.slice(first), ...run.cues.slice(0, first)] };
+}
+
+function cleanAccuracy(runs, threshold) {
+  const clean = runs.filter((r) => r.condition === 'clean');
+  const original = pooled(evaluateAll(clean, threshold, [CAL_RULE]));
+  const rotated = pooled(evaluateAll(clean.map(rotateToLearner), threshold, [CAL_RULE]));
+  return (original + rotated) / 2;
+}
+
+function widestBest(values, scores) {
+  const best = Math.max(...scores);
+  let run = null;
+  let widest = null;
+  scores.forEach((a, i) => {
+    if (Math.abs(a - best) < 1e-12) {
+      run = run && run.end === i - 1 ? { start: run.start, end: i } : { start: i, end: i };
+      if (!widest || run.end - run.start > widest.end - widest.start) widest = { ...run };
+    } else run = null;
+  });
+  return { best, from: values[widest.start], to: values[widest.end], pick: values[Math.floor((widest.start + widest.end) / 2)] };
+}
+
+// Memoized by fixture name: print and enrollVectors never change across a sweep,
+// only p and delta do, and the sweep calls this thousands of times.
+const enrollSimCache = new Map();
+function enrollSimilarities(run) {
+  if (enrollSimCache.has(run.name)) return enrollSimCache.get(run.name);
+  const print = normalize(run.print);
+  const sims = run.enrollVectors.map((v) => cosine(normalize(v), print)).sort((a, b) => a - b);
+  enrollSimCache.set(run.name, sims);
+  return sims;
+}
+
+const percentileOf = (sorted, p) => sorted[Math.min(sorted.length - 1, Math.floor(p * (sorted.length - 1)))];
+
+function calibrateGlobal(runs) {
+  const ts = steps(0.3, 0.7, 0.01);
+  const scores = ts.map((t) => cleanAccuracy(runs, t));
+  console.log(`\nGlobal threshold under '${CAL_RULE}': clean accuracy, all durations pooled (0.30–0.70 by 0.01)`);
+  for (let i = 0; i < ts.length; i += 8) console.log('  ' + ts.slice(i, i + 8).map((t, j) => `${t.toFixed(2)} ${pct(scores[i + j])}`).join('  '));
+  const w = widestBest(ts, scores);
+  console.log(`  best ${pct(w.best)} over ${w.from.toFixed(2)}–${w.to.toFixed(2)} → ${w.pick.toFixed(2)}`);
+  return { threshold: w.pick, clean: w.best, from: w.from, to: w.to };
+}
+
+function calibratePerLearner(runs) {
+  const ps = [0, 0.1, 0.25, 0.5];
+  const deltas = steps(0, 0.6, 0.01);
+  const seen = new Map();
+  for (const r of runs) {
+    const key = `${r.learner} ${r.condition}`;
+    if (!seen.has(key)) seen.set(key, enrollSimilarities(r));
+  }
+  console.log(`\nPer-learner threshold = percentile_p(enrollment windows · print) − delta, under '${CAL_RULE}'`);
+  for (const [k, sims] of seen) {
+    console.log(`  ${pad(k, 14)} ${sims.length} windows: min ${sims[0].toFixed(3)}  p10 ${percentileOf(sims, 0.1).toFixed(3)}  p25 ${percentileOf(sims, 0.25).toFixed(3)}  p50 ${percentileOf(sims, 0.5).toFixed(3)}`);
+  }
+  console.log(`\n  Delta sweep 0.00–0.60 by 0.01, clean accuracy (mean of both orderings), per percentile:`);
+  console.log(`  ${pad('p', 6)}${pad('best', 7)}${pad('flat band', 14)}${pad('pick', 6)}`);
+  let chosen = null;
+  for (const p of ps) {
+    const scores = deltas.map((d) => cleanAccuracy(runs, (r) => percentileOf(enrollSimilarities(r), p) - d));
+    const w = widestBest(deltas, scores);
+    console.log(`  ${pad(p.toFixed(2), 6)}${pad(pct(w.best).trim(), 7)}${pad(`${w.from.toFixed(2)}–${w.to.toFixed(2)}`, 14)}${pad(w.pick.toFixed(2), 6)}`);
+    const width = w.to - w.from;
+    if (!chosen || w.best > chosen.clean + 1e-12 || (Math.abs(w.best - chosen.clean) < 1e-12 && width > chosen.to - chosen.from + 1e-9)) {
+      chosen = { p, delta: w.pick, clean: w.best, from: w.from, to: w.to };
+    }
+  }
+  console.log(`  chosen p=${chosen.p.toFixed(2)}, delta=${chosen.delta.toFixed(2)}; derived thresholds: ${[...seen].map(([k, sims]) => `${k} ${(percentileOf(sims, chosen.p) - chosen.delta).toFixed(3)}`).join(', ')}`);
+  return { ...chosen, thresholdOf: (r) => percentileOf(enrollSimilarities(r), chosen.p) - chosen.delta };
+}
+
+// Every fixture opens with the other voice, which hands 'centres' a correct first
+// centre whatever the threshold. Rotating each conversation to open on each of the
+// learner's ten turns shows what the threshold costs when the learner speaks first.
+function printOpenings(runs, thresholds) {
+  console.log(`\nOpening sensitivity: room, '${CAL_RULE}', each conversation rotated to open on each learner turn (140 runs)`);
+  console.log(`${pad('thr', 14)}${DURATIONS.map((d) => pad(d === 'full' ? 'full' : `${d}s`, 28)).join('')}`);
+  for (const [label, threshold] of thresholds) {
+    const cells = DURATIONS.map((d) => {
+      let ok = 0;
+      let n = 0;
+      let worst = 1;
+      let low = 0;
+      for (const r of runs.filter((x) => x.condition === 'room')) {
+        const t = typeof threshold === 'function' ? threshold(r) : threshold;
+        for (let start = 1; start < r.cues.length; start += 2) {
+          const cues = [...r.cues.slice(start), ...r.cues.slice(0, start)];
+          const state = createSpeakers(normalize(r.print), { rule: CAL_RULE, threshold: t });
+          let k = 0;
+          for (const c of cues) if (classify(state, c.index, c.vectors[d]).speaker === c.truth) k++;
+          ok += k;
+          n += cues.length;
+          worst = Math.min(worst, k / cues.length);
+          if (k / cues.length < 0.9) low++;
+        }
+      }
+      return pad(`${pct(ok / n).trim()} worst ${pct(worst).trim()} <90%: ${low}`, 28);
+    }).join('');
+    console.log(`${pad(label, 14)}${cells}`);
+  }
+}
+
+function roomReport(runs, threshold, label) {
+  const rows = evaluateAll(runs.filter((r) => r.condition === 'room'), threshold, [CAL_RULE]);
+  console.log(`\n${label}: room, '${CAL_RULE}', all turns (worst pair; poisoning P/A/O/S as above)`);
+  console.log(`${pad('dur', 6)}${pad('same', 7)}${pad('cross', 7)}${pad('es-es', 7)}${pad('worst pair', 30)}P/A/O/S`);
+  const summary = {};
+  for (const d of DURATIONS) {
+    const xs = rows.filter((x) => x.d === d);
+    const g = (k) => pooled(xs.filter((x) => x.group === k));
+    const worst = [...xs].sort((a, b) => a.accuracy - b.accuracy)[0];
+    const sum = (k) => xs.reduce((n, x) => n + x[k], 0);
+    const pas = `${xs.filter((x) => x.poisoned).length}/${sum('absorbed')}/${xs.filter((x) => x.orphan).length}/${sum('swallowed')}`;
+    summary[d] = { same: g('same'), cross: g('cross'), esEs: g('es-es'), worst: { name: `${worst.learner} × ${worst.other}`, accuracy: worst.accuracy }, pas };
+    console.log(`${pad(d === 'full' ? 'full' : `${d}s`, 6)}${pct(g('same')).padEnd(7)}${pct(g('cross')).padEnd(7)}${pct(g('es-es')).padEnd(7)}${pad(`${worst.learner} × ${worst.other} ${pct(worst.accuracy).trim()}`, 30)}${pas}`);
+  }
+  return summary;
+}
+
+// Both orderings, for the report and for the adoption decision: the original fixtures
+// (open with the other voice) and each rotated to start at the first learner turn.
+function roomBothOrderings(runs, threshold, label) {
+  const orig = roomReport(runs, threshold, `${label} — original order (other voice opens)`);
+  const rot = roomReport(runs.map(rotateToLearner), threshold, `${label} — rotated (learner opens)`);
+  return { orig, rot };
+}
+
+const sameAt2s = (summary) => (summary.orig[2].same + summary.rot[2].same) / 2;
+const worstAt2s = (summary) => Math.min(summary.orig[2].worst.accuracy, summary.rot[2].worst.accuracy);
+
 function percentile(xs, p) {
   const s = [...xs].sort((a, b) => a - b);
   return s[Math.min(s.length - 1, Math.floor(p * s.length))];
@@ -332,14 +484,35 @@ console.log(`  learner turns  min ${f(cal.learner.min)}  p10 ${f(cal.learner.p10
 console.log(`  other turns    min ${f(cal.other.min)}  p10 ${f(cal.other.p10)}  p50 ${f(cal.other.p50)}  p90 ${f(cal.other.p90)}  max ${f(cal.other.max)}`);
 console.log(`  threshold ${cal.threshold.toFixed(2)} (optimum ${f(cal.raw)}): clean accuracy ${pct(cal.accuracy)} at the optimum, ${pct(cal.roundedAccuracy)} at ${cal.threshold.toFixed(2)}`);
 
-const rows = evaluateAll(runs, cal.threshold);
-console.log(`\n==== threshold ${cal.threshold.toFixed(2)} ====`);
+console.log(`  (print-only optimum; the rule-aware calibration below replaces it)`);
+
+const global = calibrateGlobal(runs);
+const globalRoom = roomBothOrderings(runs, global.threshold, `Global ${global.threshold.toFixed(2)}`);
+const perLearner = calibratePerLearner(runs);
+const perLearnerRoom = roomBothOrderings(runs, perLearner.thresholdOf, `Per learner p=${perLearner.p.toFixed(2)} delta=${perLearner.delta.toFixed(2)}`);
+
+// Adopted: the better on room, same-gender, 2 s, averaged over both orderings;
+// the worse-ordering worst pair at 2 s breaks a tie.
+const better = (a, b) => sameAt2s(a) - sameAt2s(b) || worstAt2s(a) - worstAt2s(b);
+const decision = better(perLearnerRoom, globalRoom);
+const adoptPerLearner = decision > 0;
+const adopted = adoptPerLearner ? perLearner.thresholdOf : global.threshold;
+const adoptedLabel = adoptPerLearner ? `per learner (p=${perLearner.p.toFixed(2)}, delta=${perLearner.delta.toFixed(2)})` : `global ${global.threshold.toFixed(2)}`;
+printOpenings(runs, [
+  ...[0.39, 0.45, 0.5, 0.55, global.threshold, 0.6, 0.65, 0.7].filter((t, i, a) => a.indexOf(t) === i).sort((a, b) => a - b).map((t) => [t.toFixed(2), t]),
+  [`p${perLearner.p}−${perLearner.delta.toFixed(2)}`, perLearner.thresholdOf],
+]);
+console.log(`\nRoom same-gender @2s, mean of both orderings: global ${pct(sameAt2s(globalRoom))} (worst-ordering worst pair ${pct(worstAt2s(globalRoom))}), per-learner ${pct(sameAt2s(perLearnerRoom))} (worst-ordering worst pair ${pct(worstAt2s(perLearnerRoom))})`);
+console.log(`Adopted: ${adoptedLabel}${decision === 0 ? ' (tie on room same-gender 2 s and worst pair: the global value, which needs no new code)' : ''}`);
+
+const rows = evaluateAll(runs, adopted);
+console.log(`\n==== threshold: ${adoptedLabel} ====`);
 console.log('\nAccuracy per fixture (all 20 turns, each cropped to the duration):');
 printFixtureTable(rows);
 printSummary(rows, 'accuracy', 'Summary, all turns (same = female English other voice, cross = male, es-es = the other Spanish voice):');
 printSummary(rows, 'long', 'Summary, turns of 2 s or more only (scored; every turn still passes through the state):');
 printPoisoning(rows);
-printSensitivity(runs, [...new Set([0.3, 0.35, cal.threshold, 0.45, 0.5, 0.55, 0.6])].sort((a, b) => a - b));
+printSensitivity(runs, [...new Set([0.3, 0.35, cal.threshold, global.threshold, 0.45, 0.5, 0.55, 0.6])].sort((a, b) => a - b));
 
 console.log('\nMixed segments (lib/segmenter.js over the conversation WAV; both speakers ≥ 0.3 s in one segment):');
 const mixed = {};
@@ -369,7 +542,7 @@ console.log(`  model files      ${download ? `${(download / 1e6).toFixed(1)} MB`
 mkdirSync(RESULTS, { recursive: true });
 const out = join(RESULTS, `speakers-${today}.json`);
 writeFileSync(out, JSON.stringify({
-  date: today, calibration: cal, mixed, worker,
+  date: today, calibration: { printOnly: cal, global, globalRoom, perLearner: { p: perLearner.p, delta: perLearner.delta, clean: perLearner.clean }, perLearnerRoom, adopted: adoptedLabel }, mixed, worker,
   embedMs: { twoS: { p50: percentile(twoS, 0.5), p90: percentile(twoS, 0.9) }, all: { p50: percentile(allMs.map((x) => x.ms), 0.5), p90: percentile(allMs.map((x) => x.ms), 0.9) } },
   downloadBytes: download ?? null,
   rows,
