@@ -27,7 +27,13 @@ export function resampleChunk(pending, chunk, ratio, cursor) {
     out.push(combined[i0] * (1 - frac) + combined[i0 + 1] * frac);
     c += ratio;
   }
-  const consumedTo = Math.floor(c);
+  // Clamped: the loop's last step can land `c` past the end of `combined`
+  // (e.g. ratio 3 over a 128-sample block puts `c` at 129). `.slice()` on an
+  // over-length index silently clamps to empty, but the *cursor* must not —
+  // an un-clamped `consumedTo` here throws away the fractional offset still
+  // owed into the next chunk, desyncing the interpolation on (almost) every
+  // render quantum for any ratio that does not evenly divide 128.
+  const consumedTo = Math.min(Math.floor(c), combined.length);
   return {
     samples: Float32Array.from(out),
     pending: combined.slice(consumedTo),

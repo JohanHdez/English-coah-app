@@ -48,3 +48,56 @@ test('a ratio of 1 is the identity (the common, already-16 kHz case)', () => {
   assert.equal(pending.length, 1);
   assert.equal(cursor, 0);
 });
+
+// Fix round 2: `consumedTo` could exceed `combined.length` at the boundary of
+// a 128-sample render quantum (the real size Web Audio delivers) whenever the
+// ratio does not evenly divide 128 — 48 kHz and 44.1 kHz both qualify. The
+// un-clamped cursor then desynced the interpolation on almost every block,
+// both duplicating/dropping samples and drifting the total output length
+// (reproduced: 48 kHz, 2 s -> 32250 samples instead of 16000 * 2 = 32000,
+// maxDiff ~= 2, the full peak-to-peak range of a unit sine). The hand-picked
+// chunk sizes in the "state carries across chunks" test above (7, 6, 7) land
+// `consumedTo` exactly on `combined.length` and never exercise the overshoot,
+// so this needs its own case driven by the real 128-sample quantum size.
+function sine(n, freq, sr) {
+  return Float32Array.from({ length: n }, (_, i) => Math.sin((2 * Math.PI * freq * i) / sr));
+}
+
+function resampleIn128SampleQuanta(signal, ratio) {
+  let pending = EMPTY;
+  let cursor = 0;
+  let out = [];
+  for (let i = 0; i < signal.length; i += 128) {
+    const step = resampleChunk(pending, signal.subarray(i, i + 128), ratio, cursor);
+    out = out.concat(Array.from(step.samples));
+    pending = step.pending;
+    cursor = step.cursor;
+  }
+  return out;
+}
+
+function assertQuantizedResampleMatchesWhole(inputRate) {
+  const ratio = inputRate / 16000;
+  const durationSec = 2;
+  const signal = sine(Math.round(durationSec * inputRate), 440, inputRate);
+
+  const whole = Array.from(resampleChunk(EMPTY, signal, ratio, 0).samples);
+  const chunked = resampleIn128SampleQuanta(signal, ratio);
+
+  const expected = durationSec * 16000;
+  assert.ok(Math.abs(chunked.length - expected) <= 1, `chunked length ${chunked.length} should be ${expected} +/- 1`);
+  assert.ok(Math.abs(whole.length - expected) <= 1, `whole-buffer length ${whole.length} should be ${expected} +/- 1`);
+
+  const n = Math.min(whole.length, chunked.length);
+  let maxDiff = 0;
+  for (let i = 0; i < n; i++) maxDiff = Math.max(maxDiff, Math.abs(whole[i] - chunked[i]));
+  assert.ok(maxDiff < 1e-6, `max difference between whole-buffer and 128-sample-chunked resampling was ${maxDiff}`);
+}
+
+test('48 kHz in real 128-sample render quanta matches a single whole-buffer call', () => {
+  assertQuantizedResampleMatchesWhole(48000);
+});
+
+test('44.1 kHz in real 128-sample render quanta matches a single whole-buffer call', () => {
+  assertQuantizedResampleMatchesWhole(44100);
+});
