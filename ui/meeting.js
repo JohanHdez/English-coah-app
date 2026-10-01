@@ -17,6 +17,11 @@ import { foldTranslation, nearBottom } from '../bubbles.js';
 import { MODEL_ID } from '../embed.js';
 import * as store from '../store.js';
 
+// transcribeGroq's own fetch carries a 30 s AbortSignal.timeout, so a stalled
+// request settles on its own; this is the backstop that keeps "Terminar" from
+// hanging if session.drain() is waiting on something that does not.
+const DRAIN_TIMEOUT_MS = 35000;
+
 // A Web Speech recogniser hears one language. 'multi' (bilingual) meetings hide
 // the live line entirely rather than mis-recognising whichever half it guesses
 // wrong — the same call the extension makes. Read fresh on every (re)start, so
@@ -210,8 +215,12 @@ export function renderMeeting(root, { settings, onEvent }) {
     if (atBottom) stickToBottom();
   }
 
-  function persistTranscript() {
-    store.set('lastTranscript', [...restored, ...session.transcript()]).catch(() => {});
+  // finishedAt stays null for every write while the meeting is ongoing (every
+  // bubble); "Terminar" is the only caller that passes one, so boot()'s next
+  // mount can tell "mid-meeting" apart from "the learner actually ended this".
+  function persistTranscript(finishedAt = null) {
+    const entries = [...restored, ...session.transcript()];
+    store.set('lastTranscript', { entries, finishedAt }).catch(() => {});
   }
 
   // --- Live line ---------------------------------------------------------
@@ -392,7 +401,11 @@ export function renderMeeting(root, { settings, onEvent }) {
   async function boot() {
     const saved = await store.get('lastTranscript');
     if (destroyed) return;
-    if (Array.isArray(saved) && saved.length) showResumeChooser(saved);
+    // Array.isArray: lastTranscript predates the { entries, finishedAt }
+    // shape, so a value saved before this change is read as unfinished.
+    const entries = Array.isArray(saved) ? saved : saved?.entries;
+    const finished = Array.isArray(saved) ? false : !!saved?.finishedAt;
+    if (!finished && Array.isArray(entries) && entries.length) showResumeChooser(entries);
     else await beginMeeting([]);
   }
   boot();
@@ -430,10 +443,14 @@ export function renderMeeting(root, { settings, onEvent }) {
     if (handle) await handle.stop();
     // Pending embeds and Groq calls (including the segment stop() just flushed)
     // are still in flight: wait for every bubble they produce before the worker
-    // that embeds them is freed and the screen calls itself finished.
-    if (session) await session.drain();
+    // that embeds them is freed and the screen calls itself finished — bounded,
+    // so a stall elsewhere cannot leave "Terminar" on "Terminando…" forever.
+    if (session) {
+      await Promise.race([session.drain(), new Promise((resolve) => setTimeout(resolve, DRAIN_TIMEOUT_MS))]);
+    }
     if (destroyed) return;
     worker.terminate();
+    persistTranscript(Date.now()); // finishedAt: a future mount must not offer this as unfinished
     setStatus('Reunión terminada.');
     newMeetingBtn.hidden = false;
   });

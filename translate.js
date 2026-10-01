@@ -30,6 +30,9 @@ async function ensureTranslator() {
 const SYSTEM_PROMPT = "Translate the user's English text into natural Latin American Spanish. Reply with the translation only.";
 const DEFAULT_BASE = 'https://api.groq.com';
 const baseOf = (base) => (base || DEFAULT_BASE).replace(/\/$/, '');
+// Shorter than transcribeGroq's: a translation is a nice-to-have shown under an
+// already-painted bubble, not something worth tying up a stalled connection for.
+const TIMEOUT_MS = 15000;
 
 async function groqTranslate(text, { key, base } = {}) {
   if (!key) return '';
@@ -45,6 +48,7 @@ async function groqTranslate(text, { key, base } = {}) {
           { role: 'user', content: text },
         ],
       }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!res.ok) return '';
     const data = await res.json();

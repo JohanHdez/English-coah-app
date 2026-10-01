@@ -144,12 +144,23 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
   const deleteTranscript = document.createElement('button');
   deleteTranscript.type = 'button';
   deleteTranscript.textContent = 'Borrar la conversación guardada';
-  deleteTranscript.addEventListener('click', async () => {
-    if (!confirm('¿Borrar la última conversación guardada en este dispositivo?')) return;
-    await store.del('lastTranscript');
-    setNotice('Conversación borrada.');
-  });
   danger.append(deleteTranscript);
+  if (endMeeting) {
+    // The running meeting re-persists [...restored, ...session.transcript()]
+    // after every bubble, so a delete here would be silently undone within
+    // seconds by the very next one — disabled instead of pretending it worked.
+    deleteTranscript.disabled = true;
+    const hint = document.createElement('p');
+    hint.className = 'notice';
+    hint.textContent = 'Termina la reunión para borrarla.';
+    danger.append(hint);
+  } else {
+    deleteTranscript.addEventListener('click', async () => {
+      if (!confirm('¿Borrar la última conversación guardada en este dispositivo?')) return;
+      await store.del('lastTranscript');
+      setNotice('Conversación borrada.');
+    });
+  }
 
   section.append(danger);
 

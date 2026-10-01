@@ -9,6 +9,7 @@ function stubGroq(capture, respond) {
   globalThis.fetch = async (url, init) => {
     capture.url = url;
     capture.form = init.body;
+    capture.signal = init.signal;
     return respond();
   };
   return () => { globalThis.fetch = original; };
@@ -125,6 +126,29 @@ test('a malformed response body is reported with the [groq] prefix', async () =>
   const restore = stubGroq({}, () => ({
     ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token'); },
   }));
+  try {
+    await assert.rejects(
+      () => transcribeGroq(samples, { key: 'gsk_test' }),
+      (err) => { assert.ok(err.message.startsWith('[groq]'), err.message); return true; },
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('the request carries an abort signal, so a stalled connection cannot hang forever', async () => {
+  const capture = {};
+  const restore = stubGroq(capture, () => ({ ok: true, status: 200, json: async () => ({ text: 'x' }) }));
+  try {
+    await transcribeGroq(samples, { key: 'gsk_test' });
+    assert.ok(capture.signal instanceof AbortSignal, 'fetch must receive a signal');
+  } finally {
+    restore();
+  }
+});
+
+test('a timed-out request is reported with the [groq] prefix, like any other network failure', async () => {
+  const restore = stubGroq({}, () => { throw new DOMException('The operation timed out.', 'TimeoutError'); });
   try {
     await assert.rejects(
       () => transcribeGroq(samples, { key: 'gsk_test' }),

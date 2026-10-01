@@ -48,6 +48,7 @@ test('with no Translator in the environment, Groq chat completions is used', asy
     assert.equal(body.messages[0].role, 'system');
     assert.equal(body.messages[1].content, 'Hello, how are you?');
     assert.equal(capture.init.headers.Authorization, 'Bearer gsk_test');
+    assert.ok(capture.init.signal instanceof AbortSignal, 'fetch must receive a signal');
   } finally {
     restore();
   }
@@ -87,6 +88,15 @@ test('a non-ok Groq response resolves to empty, never throws', async () => {
 
 test('a network failure resolves to empty, never throws', async () => {
   const restore = stubFetch(async () => { throw new TypeError('Failed to fetch'); });
+  try {
+    assert.equal(await toSpanish('Hello.', { key: 'k' }), '');
+  } finally {
+    restore();
+  }
+});
+
+test('a timed-out request resolves to empty, never throws: a translation is not worth a staged error', async () => {
+  const restore = stubFetch(async () => { throw new DOMException('The operation timed out.', 'TimeoutError'); });
   try {
     assert.equal(await toSpanish('Hello.', { key: 'k' }), '');
   } finally {

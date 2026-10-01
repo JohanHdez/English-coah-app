@@ -7,6 +7,10 @@ import { floatToWav } from './lib/segmenter.js';
 
 const DEFAULT_BASE = 'https://api.groq.com';
 const DEFAULT_MODEL = 'whisper-large-v3-turbo';
+// A stalled request (a dead mobile connection mid-upload) must not hang
+// session.drain() forever — AbortSignal.timeout turns it into an ordinary
+// fetch rejection, caught and staged exactly like any other network failure.
+const TIMEOUT_MS = 30000;
 
 // Error bodies can echo the request back, and a misbehaving proxy could put the
 // Authorization header's value in one.
@@ -35,6 +39,7 @@ export async function transcribeGroq(samples, { key, base = DEFAULT_BASE, model 
       method: 'POST',
       headers: { Authorization: `Bearer ${key}` },
       body: form,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (err) {
     throw new Error(`[groq] No se pudo contactar con Groq: ${redact(err?.message || String(err))}`);

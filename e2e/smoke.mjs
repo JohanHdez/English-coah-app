@@ -23,6 +23,10 @@ const ROOT = resolve(HERE, '..');
 const PROFILE = join(HERE, '.profile');
 const AUDIO = join(HERE, 'fixtures', 'enroll-paulina-room.wav');
 const MODEL_LOAD_TIMEOUT_MS = 10 * 60 * 1000;
+// Mirrors ui/meeting.js's own DRAIN_TIMEOUT_MS bound on "Terminar": the wait
+// here just needs to outlast it so a real hang (not the bound firing) is what
+// would time out this step.
+const DRAIN_TIMEOUT_MS = 35000;
 const FAKE_KEY = 'gsk_smoke_test_fake_key_0000000000';
 // No real conversation manifest is needed: a single cue spanning the whole run
 // matches whatever audio the mock receives, so every transcription request gets
@@ -178,6 +182,19 @@ async function main() {
     if (!meetingStillThere) throw new Error('[smoke] the meeting screen was torn down when Ajustes opened');
     console.log('meeting: Ajustes opened as an overlay; the meeting underneath was not torn down');
 
+    // N2: "Borrar la conversación guardada" must not offer to undo itself —
+    // the running meeting re-persists the transcript after every bubble.
+    const deleteTranscriptState = await chrome.evaluate(session, `
+      (() => {
+        const btn = [...document.querySelectorAll('#overlay button')].find((b) => b.textContent === 'Borrar la conversación guardada');
+        return btn ? { disabled: btn.disabled, hint: btn.parentElement.textContent.includes('Termina la reunión para borrarla') } : null;
+      })()
+    `);
+    if (!deleteTranscriptState?.disabled || !deleteTranscriptState?.hint) {
+      throw new Error(`[smoke] "Borrar la conversación guardada" is not disabled with its hint during a meeting: ${JSON.stringify(deleteTranscriptState)}`);
+    }
+    console.log('meeting: "Borrar la conversación guardada" is disabled mid-meeting, with its hint shown');
+
     // The fake microphone keeps feeding the still-running capture while the
     // overlay sits on top: long enough to outlast one more MAX_SEG_MS (8 s)
     // forced cut, so a second bubble should land while settings are open, not
@@ -201,6 +218,27 @@ async function main() {
     const stillRunning = await chrome.evaluate(session, "document.querySelector('.meeting .talk-toggle')?.disabled === false");
     if (!stillRunning) throw new Error('[smoke] the meeting no longer looks like it is running after the overlay closed');
     console.log('meeting: the session is still running after the round trip through Ajustes');
+
+    // N3 + N4: "Terminar" must complete (drain, bounded) and mark the saved
+    // transcript finished, so a future mount does not offer it as unfinished.
+    const t3 = Date.now();
+    await chrome.evaluate(session, `
+      [...document.querySelectorAll('.meeting .controls button')].find((b) => b.textContent === 'Terminar').click();
+    `);
+    await waitFor(
+      () => chrome.evaluate(session, "document.querySelector('.meeting .status')?.textContent === 'Reunión terminada.'"),
+      { timeoutMs: DRAIN_TIMEOUT_MS + 5000, label: '"Terminar" to complete (drain, then "Reunión terminada.")' },
+    );
+    console.log(`meeting: "Terminar" completed in ${((Date.now() - t3) / 1000).toFixed(1)} s`);
+    const newMeetingShown = await chrome.evaluate(session, `
+      [...document.querySelectorAll('.meeting .controls button')].some((b) => b.textContent === 'Nueva reunión' && !b.hidden)
+    `);
+    if (!newMeetingShown) throw new Error('[smoke] "Nueva reunión" was not offered after "Terminar"');
+    const savedAfterStop = await chrome.evaluate(session, "import('./store.js').then((m) => m.get('lastTranscript'))");
+    if (!savedAfterStop?.finishedAt) {
+      throw new Error(`[smoke] lastTranscript was not marked finished after "Terminar": ${JSON.stringify(savedAfterStop)}`);
+    }
+    console.log(`meeting: lastTranscript marked finished (finishedAt ${new Date(savedAfterStop.finishedAt).toISOString()}, ${savedAfterStop.entries.length} entries)`);
 
     if (externalRequests.length) {
       throw new Error(`[smoke] ${externalRequests.length} request(s) reached the real Groq API: ${externalRequests.slice(0, 3).join(', ')}`);
