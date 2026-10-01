@@ -36,6 +36,40 @@ test('once the other voice has a centre, the nearer centre decides', () => {
   assert.ok(r.me >= s.threshold);
 });
 
+test('a grey-zone \'them\' turn does not move the other centre', () => {
+  const s = createSpeakers(ME, { rule: 'threshold', threshold: 0.5, margin: 0.2 });
+  // cosine with the print is 0.4: below the 0.5 threshold (labelled 'them') but not
+  // below threshold − margin = 0.3, so it stays out of the other voice's centre.
+  const grey = [0.4, Math.sqrt(1 - 0.4 ** 2), 0];
+  const r1 = classify(s, 'a', grey);
+  assert.equal(r1.speaker, 'them');
+  assert.equal(s.turns.get('a').counts, false);
+  const r2 = classify(s, 'b', THEM);
+  assert.equal(r2.them, null);
+});
+
+test('a confident \'them\' turn does move the other centre', () => {
+  const s = createSpeakers(ME, { rule: 'threshold', threshold: 0.5, margin: 0.2 });
+  // cosine with the print is 0.1, well below threshold − margin = 0.3.
+  const confident = [0.1, Math.sqrt(1 - 0.1 ** 2), 0];
+  const r1 = classify(s, 'a', confident);
+  assert.equal(r1.speaker, 'them');
+  assert.equal(s.turns.get('a').counts, true);
+  const r2 = classify(s, 'b', THEM);
+  assert.ok(r2.them !== null);
+});
+
+test('a correction of a grey-zone turn to \'them\' makes it count', () => {
+  const s = createSpeakers(ME, { rule: 'threshold', threshold: 0.5, margin: 0.2 });
+  const grey = [0.4, Math.sqrt(1 - 0.4 ** 2), 0];
+  classify(s, 'a', grey);
+  assert.equal(s.turns.get('a').counts, false);
+  assert.equal(correct(s, 'a', 'them'), true);
+  assert.equal(s.turns.get('a').counts, true);
+  const r = classify(s, 'b', THEM);
+  assert.ok(r.them !== null);
+});
+
 test('hybrid: a turn clearly matching the print is mine whatever the other centre says', () => {
   const s = createSpeakers(ME, { rule: 'hybrid', threshold: 0.9 });
   classify(s, 'b', normalize([0.3, 1, 0]));

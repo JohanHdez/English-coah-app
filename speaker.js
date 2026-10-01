@@ -3,16 +3,26 @@
 
 // Similarity to the learner's centre above which a turn is the learner's before
 // any other voice is known (and, under 'hybrid', always). Under 'centres' this only
-// decides turns before the other voice has a centre, so it is calibrated for that
-// rule rather than for raw print-vs-print accuracy. Calibrated by e2e/speakers.mjs
-// on 2026-09-30, sweeping 0.30–0.70 under 'centres', clean accuracy averaged over
-// both meeting orderings (opens with the other voice, and rotated to open on the
-// learner): 100 % over the whole 0.54–0.68 plateau; 0.61 is its middle. Room, both
-// orderings, every duration (1/2/4 s, full), same-gender, cross-gender and the
-// Spanish pair: 100 %, no centre poisoned either way, worst single pair 100 %. A
-// per-learner threshold from enrollment similarity tied this on the same room
-// metric, so the simpler global constant was kept.
-export const MATCH_MIN = 0.61;
+// decides turns before the other voice has a centre, so it has to survive every
+// turn a meeting could open on, not just the two openings the fixtures use.
+// Calibrated by e2e/speakers.mjs on 2026-10-01: every cue of the 14 clean fixtures
+// tried as the opening (1 120 runs a threshold, pooled over 1/2/4 s and full),
+// under 'centres'. The sweep peaks at 97 % at a single point, 0.51; 0.50 ties it.
+// The previous round's 0.61 — the midpoint of a tie between two openings that
+// both happen to be easy — scores 96 % on this harder measure.
+export const MATCH_MIN = 0.5;
+// Below `threshold − MARGIN`, a turn labelled 'them' is confident enough to shape
+// the other voice's centre; in the grey zone above it, the turn is still labelled
+// 'them' but left out of the centre — classify() records it with counts: false —
+// until a correct() or assign() vouches for it. Only 'them' turns are gated: the
+// learner's centre is already anchored by PRINT_WEIGHT, and a wrong 'me' is easy
+// to correct, but a wrong 'them' can seed a centre nothing else corrects on its own.
+// Calibrated the same way as MATCH_MIN, at that threshold, on 2026-10-01: clean
+// accuracy peaks at a single point, 0.11. Room, every opening, 2 s crops: the gate
+// takes the other centre from poisoned in 5 of 280 openings to 0, and the learner
+// turns that reach it from 6 to 0, at the cost of more openings scoring under 90 %
+// (9 → 20 of 280) and same-gender pooled accuracy easing from 98 % to 96 %.
+export const MARGIN = 0.11;
 // The print outweighs any single turn, so one misassigned turn cannot drag the
 // learner's centre toward the other voice.
 export const PRINT_WEIGHT = 3;
@@ -39,15 +49,35 @@ export function meanOf(vectors) {
   return normalize(out);
 }
 
-export function createSpeakers(print, { threshold = MATCH_MIN, rule = 'centres' } = {}) {
-  return { print: normalize(print), threshold, rule, turns: new Map() };
+export function createSpeakers(print, { threshold = MATCH_MIN, rule = 'centres', margin = MARGIN } = {}) {
+  const p = normalize(print);
+  const meSum = new Float32Array(p.length);
+  for (let i = 0; i < p.length; i++) meSum[i] = p[i] * PRINT_WEIGHT;
+  return { print: p, threshold, rule, margin, turns: new Map(), meSum, themSum: null, themCount: 0 };
 }
 
 function centreOf(state, who) {
-  const vectors = [];
-  for (const t of state.turns.values()) if (t.speaker === who) vectors.push(t.vector);
-  if (who === 'me') return meanOf([...Array(PRINT_WEIGHT).fill(state.print), ...vectors]);
-  return vectors.length ? meanOf(vectors) : null;
+  if (who === 'me') return normalize(state.meSum);
+  return state.themCount > 0 ? normalize(state.themSum) : null;
+}
+
+// Running sums instead of rebuilding each centre from every counted turn on every
+// call: both are the same vector, since the print and every stored turn are
+// already unit length, so summing them once and normalizing is what meanOf() does
+// turn by turn. Running sums are what let the every-opening calibration (20
+// openings × 4 durations × dozens of threshold and margin candidates) finish in
+// minutes instead of replaying each turn against an O(turns) scan.
+function joinCentre(state, who, v) {
+  if (who === 'me') { for (let i = 0; i < v.length; i++) state.meSum[i] += v[i]; return; }
+  if (!state.themSum) state.themSum = new Float32Array(v.length);
+  for (let i = 0; i < v.length; i++) state.themSum[i] += v[i];
+  state.themCount++;
+}
+
+function leaveCentre(state, who, v) {
+  if (who === 'me') { for (let i = 0; i < v.length; i++) state.meSum[i] -= v[i]; return; }
+  for (let i = 0; i < v.length; i++) state.themSum[i] -= v[i];
+  state.themCount--;
 }
 
 function decide(state, v) {
@@ -64,19 +94,30 @@ function decide(state, v) {
 export function classify(state, id, vector) {
   const v = normalize(vector);
   const result = decide(state, v);
-  state.turns.set(id, { vector: v, speaker: result.speaker, manual: false });
+  // A 'them' call only joins the other voice's centre once it is clearly not the
+  // learner; a grey-zone call is labelled but held back from shaping it (see MARGIN).
+  const counts = result.speaker === 'me' || result.me < state.threshold - state.margin;
+  state.turns.set(id, { vector: v, speaker: result.speaker, manual: false, counts });
+  if (counts) joinCentre(state, result.speaker, v);
   return result;
 }
 
 export function assign(state, id, vector, speaker) {
-  state.turns.set(id, { vector: normalize(vector), speaker, manual: true });
+  const v = normalize(vector);
+  const existing = state.turns.get(id);
+  if (existing?.counts) leaveCentre(state, existing.speaker, existing.vector);
+  state.turns.set(id, { vector: v, speaker, manual: true, counts: true });
+  joinCentre(state, speaker, v);
 }
 
 export function correct(state, id, speaker) {
   const t = state.turns.get(id);
   if (!t) return false;
+  if (t.counts) leaveCentre(state, t.speaker, t.vector);
   t.speaker = speaker;
   t.manual = true;
+  t.counts = true;
+  joinCentre(state, speaker, t.vector);
   return true;
 }
 
