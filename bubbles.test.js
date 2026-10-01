@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { foldTranslation, nearBottom } from './bubbles.js';
+import { foldTranslation, nearBottom, shouldPersist } from './bubbles.js';
 
 test('foldTranslation: a brand new bubble carries no translation yet', () => {
   assert.deepEqual(foldTranslation(undefined, 'Hello.'), { text: 'Hello.' });
@@ -39,4 +39,24 @@ test('nearBottom: false when scrolled well above the foot', () => {
 test('nearBottom: a custom threshold is honoured', () => {
   assert.equal(nearBottom(1000, 900, 50, 60), true);
   assert.equal(nearBottom(1000, 900, 50, 40), false);
+});
+
+test('shouldPersist: a running meeting always persists its ordinary in-progress saves', () => {
+  assert.equal(shouldPersist(false, null), true);
+});
+
+test('shouldPersist: event after stop is ignored — a stopped meeting refuses an ordinary save', () => {
+  // This is the straggler case: a segment resolves after the 35 s drain bound
+  // already fired and "Terminar" moved on. Its ordinary save (finishedAt:
+  // null, the default) must not reach storage.
+  assert.equal(shouldPersist(true, null), false);
+});
+
+test('shouldPersist: finishedAt survives — the official Terminar write is never refused', () => {
+  const finishedAt = Date.now();
+  assert.equal(shouldPersist(true, finishedAt), true);
+});
+
+test('shouldPersist: a finishedAt of 0 (falsy but explicit) still counts as "provided"', () => {
+  assert.equal(shouldPersist(true, 0), true);
 });

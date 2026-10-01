@@ -18,3 +18,17 @@ export function foldTranslation(prev, text) {
 export function nearBottom(scrollHeight, scrollTop, clientHeight, thresholdPx = 48) {
   return scrollHeight - scrollTop - clientHeight < thresholdPx;
 }
+
+// Whether a lastTranscript write should proceed, once ui/meeting.js's
+// "Terminar" has committed to ending the meeting (`stopped`, set after the
+// drain race against session.drain() settles — win or bound). The drain race
+// does not cancel its loser: a segment backed up behind MAX_INFLIGHT can still
+// resolve after the 35 s bound already fired and "Reunión terminada." is on
+// screen. Without this, that straggler's ordinary in-progress save
+// (finishedAt: null, the default) would silently clear the finishedAt marker
+// Terminar already wrote, reopening a meeting the learner explicitly ended —
+// exactly the bug the finishedAt marker exists to prevent. The official
+// Terminar write itself always carries its own finishedAt and is never refused.
+export function shouldPersist(stopped, finishedAt) {
+  return !stopped || finishedAt !== null;
+}

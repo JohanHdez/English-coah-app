@@ -13,7 +13,7 @@ import { startCapture } from '../capture.js';
 import { transcribeGroq } from '../transcribe.js';
 import { toSpanish } from '../translate.js';
 import { liveAvailability, startLive } from '../lib/live.js';
-import { foldTranslation, nearBottom } from '../bubbles.js';
+import { foldTranslation, nearBottom, shouldPersist } from '../bubbles.js';
 import { MODEL_ID } from '../embed.js';
 import * as store from '../store.js';
 
@@ -218,7 +218,13 @@ export function renderMeeting(root, { settings, onEvent }) {
   // finishedAt stays null for every write while the meeting is ongoing (every
   // bubble); "Terminar" is the only caller that passes one, so boot()'s next
   // mount can tell "mid-meeting" apart from "the learner actually ended this".
+  // shouldPersist is the defensive half of the stopped guard (handleEvent's
+  // own early return is the other): the drain race in "Terminar" does not
+  // cancel its loser, so a straggler segment can still call this with no
+  // finishedAt well after the meeting was marked finished — refused here even
+  // if some future caller forgets to check `stopped` itself first.
   function persistTranscript(finishedAt = null) {
+    if (!shouldPersist(stopped, finishedAt)) return;
     const entries = [...restored, ...session.transcript()];
     store.set('lastTranscript', { entries, finishedAt }).catch(() => {});
   }
@@ -262,6 +268,13 @@ export function renderMeeting(root, { settings, onEvent }) {
 
   // --- Session wiring ---------------------------------------------------------
   let destroyed = false;
+  // Set once "Terminar"'s drain race has settled (drain() won, or the bound
+  // did). Distinct from `destroyed` (only cleanup() sets that, on real
+  // navigation away): the race does not cancel its loser, so a straggler
+  // segment can still resolve well after "Reunión terminada." is on screen.
+  // Reset on "Nueva reunión", which starts a fresh session that must accept
+  // events again.
+  let stopped = false;
   let running = false;
   let paused = false;
   let wakeLock = null;
@@ -289,7 +302,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   setupWorker();
 
   function handleEvent(event) {
-    if (destroyed) return;
+    if (destroyed || stopped) return;
     onEvent?.(event);
     if (event.type === 'bubble') {
       upsert(event.entry);
@@ -448,6 +461,13 @@ export function renderMeeting(root, { settings, onEvent }) {
     if (session) {
       await Promise.race([session.drain(), new Promise((resolve) => setTimeout(resolve, DRAIN_TIMEOUT_MS))]);
     }
+    // The race above does not cancel its loser: once it settles (drain()
+    // finished, or the bound did), any segment still resolving afterwards is a
+    // straggler. From here on handleEvent ignores it outright (no bubble, no
+    // status, no persist), and persistTranscript refuses it too even if that
+    // guard is ever bypassed — either way it cannot reopen the meeting this
+    // call is about to mark finished.
+    stopped = true;
     if (destroyed) return;
     worker.terminate();
     persistTranscript(Date.now()); // finishedAt: a future mount must not offer this as unfinished
@@ -463,6 +483,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     talkBtn.classList.remove('on');
     pauseBtn.textContent = 'Pausar';
     paused = false;
+    stopped = false; // a fresh session must accept events again
     setStatus('');
     await store.del('lastTranscript').catch(() => {});
     setupWorker();
