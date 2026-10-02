@@ -97,9 +97,10 @@ Per 60 s meeting: 2-3 mixed bubbles. Bubble latency after the speaker stops: p50
 timing, never Whisper's accuracy.
 
 Those three rows predate the 2026-10-02 fixes (tap to start, native audio rate, window-mean
-reuse). Re-measured after them, Paulina / Samantha: 93.6 % (the same run at the previous commit,
-the same day: 96.2 %; one label flip of a two-word turn separates them), latency p50 2.1 s · p90
-6.8 s, 4/18 audio-mixed requests, embedding 282 ms per second of speech.
+reuse). Re-measured after them, Paulina / Samantha: 93.6 %, latency p50 2.1 s · p90 6.8 s, 4/18
+audio-mixed requests, embedding 282 ms per second of speech. Four runs of this code the same day
+gave 93.6–94.9 %; the previous commit gave 96.2 % once. The wrong cues are the same short turns
+(«Okay, sure.», «Yes.», «Right, exactly.»).
 
 **Phone CPU, emulated** (`node e2e/run.mjs Paulina Samantha --condition=room --throttle=4`: page
 slowed 4× by DevTools, embed worker held 3× its own inference time; not a phone): 94.9 %, latency
