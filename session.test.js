@@ -49,7 +49,7 @@ test('a learner segment then an other segment produce two bubbles, me then them'
 
   session.segment(seg('me', 0));
   session.segment(seg('them', 1000));
-  await sleep(20);
+  await session.drain();
 
   const bs = bubbles(events);
   assert.equal(bs.length, 2);
@@ -68,7 +68,7 @@ test('two consecutive other segments fold into one bubble whose segs has both id
 
   session.segment(seg('them', 0, { durationMs: 1200 }));
   session.segment(seg('them', 1500));
-  await sleep(20);
+  await session.drain();
 
   const bs = bubbles(events);
   assert.equal(bs.length, 2, 'one emission per segment processed');
@@ -85,7 +85,7 @@ test('manual mode forces "me" for a segment that embeds as the other voice', asy
 
   session.setManual('me');
   session.segment(seg('them', 0));
-  await sleep(20);
+  await session.drain();
 
   const bs = bubbles(events);
   assert.equal(bs.length, 1);
@@ -98,7 +98,7 @@ test('correct() relabels the bubble and records the correction on every folded s
   const session = createSession({ embed: fakeEmbed, transcribe: fakeTranscribe([{}]), speakers, onEvent });
 
   session.segment(seg('them', 0));
-  await sleep(20);
+  await session.drain();
   const original = session.transcript()[0];
   assert.equal(original.speaker, 'them');
   const [id] = original.segs;
@@ -136,7 +136,7 @@ test('a transcription that throws emits an error and the next segment still prod
 
   session.segment(seg('me', 0));
   session.segment(seg('them', 1000));
-  await sleep(20);
+  await session.drain();
 
   assert.equal(events.filter((e) => e.type === 'error').length, 1);
   assert.equal(bubbles(events).length, 1);
@@ -150,7 +150,7 @@ test('a junk transcription produces no bubble', async () => {
   const session = createSession({ embed: fakeEmbed, transcribe, speakers, onEvent });
 
   session.segment(seg('me', 0));
-  await sleep(20);
+  await session.drain();
 
   assert.equal(bubbles(events).length, 0);
   assert.equal(session.transcript().length, 0);
@@ -173,7 +173,7 @@ test('a 4.5 s segment that switches speaker midway is split at the disagreement'
   const audio = new Float32Array(72000).fill(0.5);
   audio.fill(-0.5, 24000, 48000);
   session.segment({ audio, startedAt: 10000, durationMs: 4500, open: false });
-  await sleep(20);
+  await session.drain();
 
   const bs = bubbles(events);
   assert.equal(bs.length, 2, 'the segment must split into exactly two parts');
@@ -200,7 +200,7 @@ test('a leading short turn followed by a longer one still splits, minority first
   const audio = new Float32Array(72000).fill(0.5);
   audio.fill(-0.5, 24000);
   session.segment({ audio, startedAt: 0, durationMs: 4500, open: false });
-  await sleep(20);
+  await session.drain();
 
   const bs = bubbles(events);
   assert.equal(bs.length, 2, 'a leading minority run must still produce a split');
@@ -223,7 +223,7 @@ test('alternating window labels do not explode into a split', async () => {
   const signPerChunk = [0.5, -0.5, 0.5, -0.5, 0.5, 0.5]; // 6 chunks of 12000 samples
   signPerChunk.forEach((sign, c) => audio.fill(sign, c * 12000, (c + 1) * 12000));
   session.segment({ audio, startedAt: 0, durationMs: 4500, open: false });
-  await sleep(20);
+  await session.drain();
 
   assert.equal(bubbles(events).length, 1, 'alternating windows must stay one segment');
 });
@@ -245,7 +245,7 @@ test('an embed that rejects during the 5b window scan does not stop later segmen
 
   session.segment({ audio: new Float32Array(72000).fill(0.5), startedAt: 0, durationMs: 4500, open: false });
   session.segment(seg('me', 5000));
-  await sleep(20);
+  await session.drain();
 
   assert.equal(events.filter((e) => e.type === 'error').length, 1);
   const bs = bubbles(events);
@@ -267,7 +267,7 @@ test("an onEvent that throws once does not stop the next segment's bubble", asyn
 
   session.segment(seg('me', 0));
   session.segment(seg('them', 1000));
-  await sleep(20);
+  await session.drain();
 
   const bs = bubbles(events);
   assert.equal(bs.length, 1, "only the second segment's event got through the broken sink");
@@ -290,7 +290,7 @@ test('manual mode is captured at segment() time, not when the embedding resolves
   session.segment(seg('them', 0)); // embeds as the other voice, but "soy yo" is on
   session.setManual(null); // toggled off before the embedding (and labelling) happen
   release();
-  await sleep(20);
+  await session.drain();
 
   const bs = bubbles(events);
   assert.equal(bs.length, 1);
