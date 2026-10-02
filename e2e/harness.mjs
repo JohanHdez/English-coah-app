@@ -27,8 +27,10 @@ export const MODEL_LOAD_TIMEOUT_MS = 10 * 60 * 1000;
 export const DRAIN_TIMEOUT_MS = 35000;
 export const FAKE_KEY = 'gsk_e2e_mock_key_0000000000';
 const PORT = 47831;
-// The one allowed exception: the app's own voice-model download.
-const MODEL_HOSTS = /(^|\.)(huggingface\.co|hf\.co)$|^cdn-lfs/;
+// The one allowed exception: the app's own voice-model download. The exact hosts
+// seen on 2026-10-02 (the model's metadata, then its Xet-backed CDN); a different
+// CDN host fails the run by name rather than being waved through.
+const MODEL_HOSTS = new Set(['huggingface.co', 'us.aws.cdn.hf.co']);
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -55,28 +57,49 @@ export async function startServer() {
 }
 
 // Opens the app and records what the run must report: console errors and
-// exceptions, and every request to a host other than loopback and the model's.
-export async function openPage(chrome, base, { initScript } = {}) {
-  const page = { errors: [], externalRequests: [] };
+// exceptions, and every request to a host other than loopback and the model's —
+// the page's own and its workers' (the embed worker is the one that downloads the
+// model), attached automatically.
+export async function openPage(chrome, base, { initScript, cpuThrottle } = {}) {
+  const page = { errors: [], externalRequests: [], throttled: [] };
   const { targetId } = await chrome.send('Target.createTarget', { url: 'about:blank' });
   const session = await chrome.attach(targetId);
   page.session = session;
+  const watched = new Set([session]);
+  chrome.on((method, params) => {
+    if (method !== 'Target.attachedToTarget' || params.targetInfo?.type === 'page') return;
+    const child = params.sessionId;
+    watched.add(child);
+    chrome.send('Network.enable', {}, child).catch(() => {});
+    chrome.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, child).catch(() => {});
+    if (cpuThrottle) {
+      chrome.send('Emulation.setCPUThrottlingRate', { rate: cpuThrottle }, child).then(
+        () => page.throttled.push(params.targetInfo.type),
+        (err) => page.throttled.push(`${params.targetInfo.type}: ${err.message}`),
+      );
+    }
+  });
   await chrome.send('Runtime.enable', {}, session);
   await chrome.send('Network.enable', {}, session);
   await chrome.send('Page.enable', {}, session);
+  await chrome.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, session);
+  if (cpuThrottle) await chrome.send('Emulation.setCPUThrottlingRate', { rate: cpuThrottle }, session);
   if (initScript) await chrome.send('Page.addScriptToEvaluateOnNewDocument', { source: initScript }, session);
   chrome.on((method, params, sid) => {
+    if (!watched.has(sid)) return;
+    if (method === 'Network.requestWillBeSent') {
+      const url = params.request?.url || '';
+      if (/^https?:/.test(url)) {
+        const host = new URL(url).hostname;
+        if (host !== '127.0.0.1' && !MODEL_HOSTS.has(host)) page.externalRequests.push(url);
+      }
+      return;
+    }
     if (sid !== session) return;
     if (method === 'Runtime.consoleAPICalled' && params.type === 'error') {
       page.errors.push(`[console] ${params.args.map((a) => a.value ?? a.description ?? '').join(' ')}`);
     } else if (method === 'Runtime.exceptionThrown') {
       page.errors.push(`[exception] ${params.exceptionDetails.exception?.description || params.exceptionDetails.text}`);
-    } else if (method === 'Network.requestWillBeSent') {
-      const url = params.request?.url || '';
-      if (/^https?:/.test(url)) {
-        const host = new URL(url).hostname;
-        if (host !== '127.0.0.1' && !MODEL_HOSTS.test(host)) page.externalRequests.push(url);
-      }
     }
   });
   await chrome.send('Page.navigate', { url: `${base}/` }, session);
@@ -89,6 +112,33 @@ export async function resetStorage(chrome, session) {
   await waitFor(() => chrome.evaluate(session, "document.readyState === 'complete'"), { label: 'the page to load' });
   await chrome.evaluate(session, "import('./store.js').then((m) => Promise.all(['consent', 'settings', 'print', 'lastTranscript'].map((k) => m.del(k))))");
   await chrome.send('Page.reload', {}, session);
+}
+
+// A real mouse press and release at the element's centre: unlike element.click()
+// from a script, it carries the user activation an AudioContext needs to run.
+export async function tap(chrome, session, selector) {
+  const point = await chrome.evaluate(session, `(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el || el.hidden || el.disabled) return null;
+    el.scrollIntoView({ block: 'center' });
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`);
+  if (!point) throw new Error(`[e2e] nothing to tap at ${selector}`);
+  await chrome.send('Page.bringToFront', {}, session);
+  await chrome.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y }, session);
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await chrome.send('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left', clickCount: 1 }, session);
+  }
+}
+
+// Taps «Empezar reunión» as soon as the meeting screen offers it.
+export async function startMeeting(chrome, session) {
+  await waitFor(
+    () => chrome.evaluate(session, "(() => { const b = document.querySelector('.meeting .start-meeting'); return !!b && !b.hidden; })()"),
+    { label: '«Empezar reunión»' },
+  );
+  await tap(chrome, session, '.meeting .start-meeting');
 }
 
 export function assertNoExternal(externalRequests, label) {
@@ -108,11 +158,11 @@ export async function enrollViaUi(chrome, session, log = () => {}) {
     { timeoutMs: MODEL_LOAD_TIMEOUT_MS, everyMs: 1000, label: 'the voice model to finish loading' },
   );
   log(`enrollment: model ready in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
-  await chrome.evaluate(session, "document.querySelector('.enroll button.primary').click();");
+  await tap(chrome, session, '.enroll button.primary');
   const t1 = Date.now();
   await waitFor(async () => {
     const status = await chrome.evaluate(session, "document.querySelector('.enroll .status')?.textContent || ''");
-    if (/No te oí lo suficiente/.test(status)) throw new Error(`[e2e] enrollment reported: ${status}`);
+    if (/No te oí lo suficiente|\[micrófono\]|\[huella\]/.test(status)) throw new Error(`[e2e] enrollment reported: ${status}`);
     return chrome.evaluate(session, "import('./store.js').then((m) => m.get('print'))");
   }, { timeoutMs: 60000, everyMs: 500, label: 'the print to be stored' });
   log(`enrollment: finished recording + embedding in ${((Date.now() - t1) / 1000).toFixed(1)} s`);
@@ -130,7 +180,7 @@ const MIC_CLOCK = `(() => {
 
 // One conversation through the whole app. Returns the events with timestamps, the
 // fixture's manifest and the Groq stand-in's request log.
-export async function runConversation({ learner, other, condition = 'room', delayMs = 900, lang = 'en', log = console.log }) {
+export async function runConversation({ learner, other, condition = 'room', delayMs = 900, lang = 'en', cpuThrottle = 0, log = console.log }) {
   const name = `${slug(learner)}-${slug(other)}-${condition}`;
   const enrollWav = join(FIXTURES, `enroll-${slug(learner)}-${condition}.wav`);
   const convoWav = join(FIXTURES, `${name}.wav`);
@@ -169,8 +219,13 @@ export async function runConversation({ learner, other, condition = 'room', dela
 
     const chrome = await Chrome.launch({ profile: PROFILE, headless: true, audioFile: convoWav });
     try {
-      const page = await openPage(chrome, base, { initScript: MIC_CLOCK });
+      // window.__ec is created by app.js; the slowdown is read when the meeting's
+      // worker starts, after the app has run.
+      const slow = cpuThrottle ? `;addEventListener('DOMContentLoaded', () => { if (window.__ec) window.__ec.cpuSlowdown = ${cpuThrottle}; });` : '';
+      const page = await openPage(chrome, base, { initScript: MIC_CLOCK + slow, cpuThrottle });
       const { session } = page;
+      if (cpuThrottle) log(`meeting: CPU throttled ${cpuThrottle}×`);
+      await startMeeting(chrome, session);
       await waitFor(
         () => chrome.evaluate(session, "document.querySelector('.screen.meeting .controls .talk-toggle')?.disabled === false"),
         { timeoutMs: MODEL_LOAD_TIMEOUT_MS, everyMs: 500, label: 'the meeting to start recording' },
@@ -185,10 +240,15 @@ export async function runConversation({ learner, other, condition = 'room', dela
         { timeoutMs: DRAIN_TIMEOUT_MS + 5000, label: '"Terminar" to complete' },
       );
       const events = await chrome.evaluate(session, 'window.__ec.events');
+      const embeds = await chrome.evaluate(session, 'window.__ec.embeds');
       errors.push(...page.errors);
       external.push(...page.externalRequests);
       assertNoExternal(external, 'e2e');
-      result = { name, learner, other, condition, manifest, micT0, events, requests: mock.requests.slice(), errors };
+      if (cpuThrottle) {
+        log(`meeting: DevTools throttling: page yes; ${page.throttled.join('; ') || 'no other target'}`);
+        log(`meeting: embed worker slowed ${await chrome.evaluate(session, 'window.__ec.cpuSlowdown')}× by holding its thread (DevTools cannot throttle a worker)`);
+      }
+      result = { name, learner, other, condition, cpuThrottle, manifest, micT0, events, embeds, requests: mock.requests.slice(), errors };
     } finally {
       await chrome.close();
     }

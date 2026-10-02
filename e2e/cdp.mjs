@@ -59,7 +59,8 @@ export class Chrome {
       // read: the device then delivers silence and Chrome only says so on stderr
       // ("Failed to read … as input to the fake device"). Measured, not assumed.
       '--disable-features=AudioServiceSandbox',
-      '--autoplay-policy=no-user-gesture-required',
+      // No --autoplay-policy flag: the app must start its AudioContext from a real
+      // tap (see tap() in harness.mjs), and no harness here plays audio otherwise.
       '--window-size=960,720',
       ...extra,
       'about:blank',

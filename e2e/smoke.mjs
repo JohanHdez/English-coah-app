@@ -6,7 +6,11 @@
 // IndexedDB, confirms the meeting mounts with no console errors, then exercises
 // fix round 1's finding 1: opening Ajustes mid-meeting (with the fake microphone
 // still feeding the running capture) must not drop the conversation, and closing
-// it must return to the very same meeting, bubbles and all. Nothing under e2e/
+// it must return to the very same meeting, bubbles and all. The meeting starts
+// on a real tap of «Empezar reunión» (no autoplay flag), and a capture that dies
+// while the page is away (simulated: the tracks are stopped, then the page is
+// told it is visible again) must be reported and resumed into the same meeting
+// with «Reanudar». Nothing under e2e/
 // ships in the release zip (see tools/check.mjs's EXCLUDED_PATHS / the release
 // skill), so this stays a manual/CI check, never part of the app bundle.
 //
@@ -15,13 +19,28 @@
 import { join } from 'node:path';
 import { Chrome } from './cdp.mjs';
 import { startMockGroq } from './mock-groq.mjs';
-import { PROFILE, FIXTURES, sleep, waitFor, startServer, openPage, assertNoExternal, enrollViaUi, resetStorage, DRAIN_TIMEOUT_MS, FAKE_KEY } from './harness.mjs';
+import { PROFILE, FIXTURES, sleep, waitFor, startServer, openPage, assertNoExternal, enrollViaUi, resetStorage, startMeeting, tap, DRAIN_TIMEOUT_MS, FAKE_KEY } from './harness.mjs';
 
 const AUDIO = join(FIXTURES, 'enroll-paulina-room.wav');
 // No real conversation manifest is needed: a single cue spanning the whole run
 // matches whatever audio the mock receives, so every transcription request gets
 // the same fixed, harmless text back.
 const MOCK_MANIFEST = { cues: [{ key: 'smoke', start: 0, end: 24 * 60 * 60, lang: 'en', text: 'Hello, this is a smoke test.' }] };
+
+// Keeps every microphone stream the page opens, so the run can end them the way
+// a phone's OS does when the app is backgrounded.
+const KEEP_STREAMS = `(() => {
+  const md = navigator.mediaDevices;
+  const gum = md.getUserMedia.bind(md);
+  window.__streams = [];
+  md.getUserMedia = async (c) => { const s = await gum(c); window.__streams.push(s); return s; };
+})();`;
+
+// Headless Chrome refuses the screen Wake Lock, so the app's own warning about it
+// is as good as «Grabando…» here: both mean capture was checked and is running.
+const RECORDING = /^(Grabando…|La pantalla puede apagarse y cortar el micrófono\. Mantén la app abierta\.)$/;
+
+const statusText = (chrome, session) => chrome.evaluate(session, "document.querySelector('.meeting .status')?.textContent || ''");
 
 const bubbleCount = (chrome, session) =>
   chrome.evaluate(session, "document.querySelectorAll('.meeting .transcript .bubble').length");
@@ -34,7 +53,7 @@ async function main() {
   let page;
   let session;
   try {
-    page = await openPage(chrome, base);
+    page = await openPage(chrome, base, { initScript: KEEP_STREAMS });
     session = page.session;
     await resetStorage(chrome, session);
 
@@ -79,6 +98,7 @@ async function main() {
 
     // --- Enrollment ----------------------------------------------------------
     await enrollViaUi(chrome, session, console.log);
+    const streamsAfterEnroll = await chrome.evaluate(session, 'window.__streams.length');
 
     // --- Read the print back --------------------------------------------------
     const print = await chrome.evaluate(session, "import('./store.js').then((m) => m.get('print'))");
@@ -95,7 +115,17 @@ async function main() {
       () => chrome.evaluate(session, "document.querySelector('.screen.meeting') != null"),
       { label: 'the meeting screen to render' },
     );
-    await sleep(1500); // let init() (model load from cache, capture, wake lock) settle
+    await sleep(1500); // time enough for a meeting that started on its own to open the microphone
+    const autoStarted = await chrome.evaluate(session, 'window.__streams.length') > streamsAfterEnroll;
+    if (autoStarted) throw new Error('[smoke] the meeting opened the microphone before any tap');
+    await startMeeting(chrome, session);
+    await waitFor(
+      () => chrome.evaluate(session, "document.querySelector('.meeting .talk-toggle')?.disabled === false"),
+      { timeoutMs: 60000, label: 'recording after the «Empezar reunión» tap' },
+    );
+    const recording = await statusText(chrome, session);
+    if (!RECORDING.test(recording)) throw new Error(`[smoke] expected «Grabando…» after the tap, got "${recording}"`);
+    console.log(`meeting: started on a real tap of «Empezar reunión» (no autoplay flag); status "${recording}"`);
     const meetingOk = await chrome.evaluate(session, `
       !!(document.querySelector('.meeting .transcript')
         && document.querySelector('.meeting .controls .talk-toggle')
@@ -158,6 +188,27 @@ async function main() {
     const stillRunning = await chrome.evaluate(session, "document.querySelector('.meeting .talk-toggle')?.disabled === false");
     if (!stillRunning) throw new Error('[smoke] the meeting no longer looks like it is running after the overlay closed');
     console.log('meeting: the session is still running after the round trip through Ajustes');
+
+    // Final review, finding 2: capture that dies in the background is reported on
+    // return, and «Reanudar» restarts it into the same meeting.
+    const beforeLoss = await bubbleCount(chrome, session);
+    await chrome.evaluate(session, `
+      window.__streams.forEach((s) => s.getTracks().forEach((t) => t.stop()));
+      document.dispatchEvent(new Event('visibilitychange'));
+    `);
+    const lost = await statusText(chrome, session);
+    const resumeShown = await chrome.evaluate(session, "document.querySelector('.meeting .resume-capture')?.hidden === false");
+    if (!/La captura se detuvo mientras la app estaba en segundo plano/.test(lost) || !resumeShown) {
+      throw new Error(`[smoke] a dead capture was not reported on return: status "${lost}", «Reanudar» shown: ${resumeShown}`);
+    }
+    console.log(`meeting: capture stopped behind the page's back -> "${lost}" with «Reanudar»`);
+    await tap(chrome, session, '.meeting .resume-capture');
+    await waitFor(() => statusText(chrome, session).then((t) => RECORDING.test(t)), { timeoutMs: 15000, label: '«Grabando…» after «Reanudar»' });
+    await waitFor(() => bubbleCount(chrome, session).then((n) => n > beforeLoss), {
+      timeoutMs: 60000, everyMs: 500, label: 'a new bubble after «Reanudar»',
+    });
+    const afterResume = await bubbleCount(chrome, session);
+    console.log(`meeting: «Reanudar» restarted capture into the same meeting (${beforeLoss} -> ${afterResume} bubbles, ${await chrome.evaluate(session, 'window.__streams.length')} streams opened)`);
 
     // N3 + N4: "Terminar" must complete (drain, bounded) and mark the saved
     // transcript finished, so a future mount does not offer it as unfinished.
