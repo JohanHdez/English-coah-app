@@ -366,6 +366,7 @@ test('shouldScan: long segments only, and only while the embedding backlog is wi
 test('a backlog of embedding skips the window scan until it recovers, with no error', async () => {
   const { events, onEvent } = collector();
   const speakers = createSpeakers(ME_LIKE);
+  let clock = 0;
   let release;
   const gate = new Promise((r) => { release = r; });
   let first = true;
@@ -373,20 +374,26 @@ test('a backlog of embedding skips the window scan until it recovers, with no er
     if (first) { first = false; await gate; }
     return audio[0] > 0 ? ME_LIKE : THEM_LIKE;
   };
-  const session = createSession({ embed, transcribe: fakeTranscribe([{}]), speakers, onEvent });
+  const session = createSession({ embed, transcribe: fakeTranscribe([{}]), speakers, onEvent, now: () => clock });
   const long = (t) => ({ audio: new Float32Array(72000).fill(0.5), startedAt: t, durationMs: 4500, open: false });
-  // The first segment's scan stalls while four more (18 s of audio) pile up
-  // behind it: the second then has 13.5 s queued behind it and is labelled
-  // whole; by the third the queue is back under 10 s and scanning resumes.
+  // The first segment's scan stalls; meanwhile two more arrive, 4.5 s apart.
   session.segment(long(0));
   await sleep(5);
-  for (let i = 1; i < 5; i++) session.segment(long(i * 5000));
+  clock = 4500;
+  session.segment(long(4500));
+  clock = 9000;
+  session.segment(long(9000));
   release();
+  await session.drain();
+  // The second waited 4.5 s with 4.5 s queued behind it: labelled whole. The
+  // third, handed in as the stall cleared, waited nothing: scanned again.
+  clock = 20000;
+  session.segment(long(20000));
   await session.drain();
 
   const labelled = events.filter((e) => e.type === 'labelled');
-  assert.deepEqual(labelled.map((e) => e.scanned), [true, false, true, true, true]);
-  assert.deepEqual(labelled.map((e) => e.backlogMs), [18000, 13500, 9000, 4500, 0]);
+  assert.deepEqual(labelled.map((e) => e.backlogMs), [0, 9000, 0, 0]);
+  assert.deepEqual(labelled.map((e) => e.scanned), [true, false, true, true]);
   assert.equal(events.filter((e) => e.type === 'error').length, 0);
 });
 

@@ -15,10 +15,13 @@ const WIN_SECS = 1.5;
 const HOP_SECS = 0.75;
 
 // Phone budget (final review, finding 5): the window scan costs about 1.3 s of
-// embedding per second of audio. Audio queued behind the segment being labelled
-// is how far embedding has fallen behind the speaker; past this, long segments
-// get one whole-segment label until the queue recovers.
-export const BACKLOG_SKIP_MS = 10000;
+// embedding per second of audio. How far embedding trails the speaker is how
+// long this segment waited for its turn plus the audio queued behind it; past
+// BACKLOG_SKIP_MS, long segments get one whole-segment label until it recovers.
+// Measured with e2e/run.mjs --throttle=4: audio queued behind the segment alone
+// never passed 7.8 s while bubbles fell 8–9 s behind, because a segment that
+// arrived mid-scan is no longer "behind" anything once its own turn comes.
+export const BACKLOG_SKIP_MS = 4000;
 
 export function shouldScan(durationMs, backlogMs) {
   return durationMs >= SPLIT_MIN_MS && backlogMs <= BACKLOG_SKIP_MS;
@@ -284,11 +287,13 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
     const manualAtCapture = manual;
     if (closed) return;
     queuedEmbedMs += seg.durationMs;
+    const handedAt = now();
     labelChain = labelChain.then(async () => {
       queuedEmbedMs -= seg.durationMs;
       if (closed) return;
-      const scan = shouldScan(seg.durationMs, queuedEmbedMs);
       const t0 = now();
+      const backlogMs = (t0 - handedAt) + queuedEmbedMs;
+      const scan = shouldScan(seg.durationMs, backlogMs);
       try {
         const parts = scan ? await splitIfNeeded(seg) : [seg];
         for (const part of parts) await labelAndDispatch(part, manualAtCapture);
@@ -296,7 +301,7 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
         queueEmit(() => { throw err; });
       }
       // Measurement only (the harness records it); the screen ignores it.
-      safeEmit({ type: 'labelled', durationMs: seg.durationMs, embedMs: now() - t0, backlogMs: queuedEmbedMs, scanned: scan });
+      safeEmit({ type: 'labelled', durationMs: seg.durationMs, embedMs: now() - t0, backlogMs, scanned: scan });
     });
   }
 
