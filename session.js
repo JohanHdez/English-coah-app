@@ -4,7 +4,7 @@
 // `speakers` is state from speaker.js the caller owns, so it survives corrections.
 
 import { isJunk, foldIntoTranscript, SR } from './lib/segmenter.js';
-import { classify, assign, correct as correctSpeaker, labelWindows } from './speaker.js';
+import { classify, assign, correct as correctSpeaker, labelWindows, meanOf } from './speaker.js';
 
 // Step 5b: measurement found 28.5 % of segments mix both voices (the segmenter
 // waits 700 ms of silence; people take turns faster). A segment this long or
@@ -14,11 +14,101 @@ const SPLIT_MIN_MS = 3000;
 const WIN_SECS = 1.5;
 const HOP_SECS = 0.75;
 
+// Phone budget (final review, finding 5): the window scan costs about 1.3 s of
+// embedding per second of audio. Audio queued behind the segment being labelled
+// is how far embedding has fallen behind the speaker; past this, long segments
+// get one whole-segment label until the queue recovers.
+export const BACKLOG_SKIP_MS = 10000;
+
+export function shouldScan(durationMs, backlogMs) {
+  return durationMs >= SPLIT_MIN_MS && backlogMs <= BACKLOG_SKIP_MS;
+}
+
+// Audio waiting for a Groq slot, in milliseconds. LATE_MS of waiting audio means
+// the bubbles already trail the speaker by that much: the UI says so. CAP_MS is
+// the most it may hold: a minute of 16 kHz Float32 is 3.8 MB, and a bubble more
+// than a minute late is no use in a live conversation, so the oldest waiting
+// segment is dropped — visibly, as an error event — rather than letting memory
+// and latency grow for the rest of the meeting.
+export const LATE_MS = 10000;
+export const CAP_MS = 60000;
+const MAX_INFLIGHT = 2;
+
+export const DROPPED_MESSAGE = '[groq] Groq va con retraso: se descartó un fragmento de audio.';
+export const LATE_STATUS = 'Groq va con retraso…';
+
+// At most `maxInflight` uploads at once; the rest wait in arrival order. Every
+// enqueue resolves (never rejects) with { ok, value } | { ok: false, error } |
+// { ok: false, dropped: true } (closed before it started).
+export function createUploadQueue({ maxInflight = MAX_INFLIGHT, capMs = CAP_MS, lateMs = LATE_MS, onLate = () => {}, onDrop = () => {} } = {}) {
+  let active = 0;
+  let waitingMs = 0;
+  let late = false;
+  let closed = false;
+  const waiting = [];
+
+  function setLate(next) {
+    if (next === late) return;
+    late = next;
+    onLate(late);
+  }
+
+  function start(item) {
+    active++;
+    item.fn().then(
+      (value) => settle(item, { ok: true, value }),
+      (error) => settle(item, { ok: false, error }),
+    );
+  }
+
+  function settle(item, outcome) {
+    active--;
+    item.resolve(outcome);
+    if (waiting.length && !closed) {
+      const next = waiting.shift();
+      waitingMs -= next.audioMs;
+      start(next);
+    }
+    if (waitingMs < lateMs) setLate(false);
+  }
+
+  function enqueue(fn, audioMs = 0) {
+    return new Promise((resolve) => {
+      const item = { fn, audioMs, resolve };
+      if (closed) { resolve({ ok: false, dropped: true }); return; }
+      if (active < maxInflight) { start(item); return; }
+      waiting.push(item);
+      waitingMs += audioMs;
+      while (waitingMs > capMs && waiting.length > 1) {
+        const oldest = waiting.shift();
+        waitingMs -= oldest.audioMs;
+        onDrop(oldest.audioMs);
+        oldest.resolve({ ok: false, error: new Error(DROPPED_MESSAGE) });
+      }
+      if (waitingMs >= lateMs) setLate(true);
+    });
+  }
+
+  function close() {
+    closed = true;
+    for (const item of waiting.splice(0)) item.resolve({ ok: false, dropped: true });
+    waitingMs = 0;
+  }
+
+  return { enqueue, close, waitingMs: () => waitingMs, active: () => active };
+}
+
 export function createSession({ embed, transcribe, speakers, now = Date.now, onEvent }) {
   const transcript = [];
   let manual = null;
   let seq = 0;
   const nextId = () => seq++;
+  let closed = false;
+  // Fires on close(): the in-flight uploads and their retries stop, so no meeting
+  // audio leaves the device once the meeting is over.
+  const aborter = new AbortController();
+  // Audio handed to segment() whose labelling has not started yet.
+  let queuedEmbedMs = 0;
 
   // Isolates one onEvent call: a throwing listener (a UI bug) must not corrupt
   // the chains below, and must not stop later segments from painting.
@@ -57,29 +147,14 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
       try {
         await task();
       } catch (err) {
-        emitError(err);
+        if (!closed) emitError(err);
       }
     });
   }
 
-  let active = 0;
-  const MAX_INFLIGHT = 2;
-  const waiting = [];
-  function withLimit(fn) {
-    return new Promise((resolve) => {
-      const start = () => {
-        active++;
-        const settle = (outcome) => {
-          active--;
-          if (waiting.length) waiting.shift()();
-          resolve(outcome);
-        };
-        fn().then((value) => settle({ ok: true, value }), (error) => settle({ ok: false, error }));
-      };
-      if (active < MAX_INFLIGHT) start();
-      else waiting.push(start);
-    });
-  }
+  const uploads = createUploadQueue({
+    onLate: (late) => safeEmit({ type: 'status', text: late ? LATE_STATUS : '' }),
+  });
 
   function labelUnit(id, vector, manualSpeaker) {
     if (manualSpeaker) {
@@ -115,19 +190,22 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
   // One audio stretch through embed -> classify/assign -> transcribe -> fold.
   // `manualSpeaker` is the mode in force when the *segment* was captured (see
   // segment() below), not whenever this async chain happens to reach it.
-  async function labelAndDispatch({ audio, startedAt, durationMs }, manualSpeaker) {
+  // `vector`, when present, is the mean of the scan's windows over this very
+  // audio: embedding it again would cost as much as the scan saved.
+  async function labelAndDispatch({ audio, startedAt, durationMs, vector: known }, manualSpeaker) {
     const id = nextId();
     let speaker;
     try {
-      const vector = await embed(audio);
+      const vector = known || await embed(audio);
       speaker = labelUnit(id, vector, manualSpeaker);
     } catch (err) {
       queueEmit(() => { throw err; });
       return;
     }
-    const transcribed = withLimit(() => transcribe(audio));
+    const transcribed = uploads.enqueue(() => transcribe(audio, aborter.signal), durationMs);
     queueEmit(async () => {
       const outcome = await transcribed;
+      if (outcome.dropped || closed) return;
       if (!outcome.ok) throw outcome.error;
       const result = outcome.value;
       if (isJunk(result.text)) return;
@@ -183,11 +261,13 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
       vectors.push(await embed(seg.audio.slice(start, start + winSamples)));
       starts.push(start);
     }
-    if (vectors.length < 3) return [seg];
+    if (!vectors.length) return [seg];
+    const whole = { ...seg, vector: meanOf(vectors) };
+    if (vectors.length < 3) return [whole];
 
     const labels = labelWindows(speakers, vectors);
     const runs = mergeShortRuns(runsOf(labels));
-    if (runs.length < 2) return [seg];
+    if (runs.length < 2) return [whole];
 
     const splitAt = starts[runs[1].startIdx];
     const firstMs = (splitAt / SR) * 1000;
@@ -202,13 +282,21 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
     // was actually captured must stick with it, not whatever is on by the time
     // its embedding (an async step, possibly after a 5b split) finishes.
     const manualAtCapture = manual;
+    if (closed) return;
+    queuedEmbedMs += seg.durationMs;
     labelChain = labelChain.then(async () => {
+      queuedEmbedMs -= seg.durationMs;
+      if (closed) return;
+      const scan = shouldScan(seg.durationMs, queuedEmbedMs);
+      const t0 = now();
       try {
-        const parts = seg.durationMs >= SPLIT_MIN_MS ? await splitIfNeeded(seg) : [seg];
+        const parts = scan ? await splitIfNeeded(seg) : [seg];
         for (const part of parts) await labelAndDispatch(part, manualAtCapture);
       } catch (err) {
         queueEmit(() => { throw err; });
       }
+      // Measurement only (the harness records it); the screen ignores it.
+      safeEmit({ type: 'labelled', durationMs: seg.durationMs, embedMs: now() - t0, backlogMs: queuedEmbedMs, scanned: scan });
     });
   }
 
@@ -236,5 +324,14 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
     return labelChain.then(() => emitChain);
   }
 
-  return { segment, setManual, correct, transcript: () => transcript, drain };
+  // The meeting is over: segments not yet uploaded are dropped, uploads in
+  // flight are aborted, and nothing settles into an event after this.
+  function close() {
+    if (closed) return;
+    closed = true;
+    uploads.close();
+    aborter.abort();
+  }
+
+  return { segment, setManual, correct, transcript: () => transcript, drain, close };
 }

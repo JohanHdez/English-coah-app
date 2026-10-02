@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSession } from './session.js';
+import { createSession, createUploadQueue, shouldScan, BACKLOG_SKIP_MS, CAP_MS, LATE_MS, LATE_STATUS, DROPPED_MESSAGE } from './session.js';
 import { createSpeakers } from './speaker.js';
 
 // The audio's first sample stands in for the speaker: a real embedding is a
@@ -257,6 +257,7 @@ test("an onEvent that throws once does not stop the next segment's bubble", asyn
   const events = [];
   let threw = false;
   const onEvent = (e) => {
+    if (e.type !== 'bubble') return;
     if (!threw) { threw = true; throw new Error('ui bug'); }
     events.push(e);
   };
@@ -324,4 +325,166 @@ test('drain() also waits out a segment queued by a 5b split', async () => {
   await session.drain();
 
   assert.equal(bubbles(events).length, 2, 'both split parts resolved before drain() returned');
+});
+
+// Final review, finding 5: a no-split segment reuses the mean of its scan
+// windows instead of being embedded a second time.
+test('a long segment that does not split is embedded once per window, never again in full', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const lengths = [];
+  const embed = async (audio) => { lengths.push(audio.length); return audio[0] > 0 ? ME_LIKE : THEM_LIKE; };
+  const session = createSession({ embed, transcribe: fakeTranscribe([{}]), speakers, onEvent });
+
+  session.segment({ audio: new Float32Array(72000).fill(-0.5), startedAt: 0, durationMs: 4500, open: false });
+  await session.drain();
+
+  assert.deepEqual(lengths, [24000, 24000, 24000, 24000, 24000], 'five 1.5 s windows and no 4.5 s embed');
+  assert.equal(bubbles(events).length, 1);
+  assert.equal(bubbles(events)[0].entry.speaker, 'them', 'the window mean still decides the label');
+});
+
+test('a split segment still embeds each part in full', async () => {
+  const speakers = createSpeakers(ME_LIKE);
+  const lengths = [];
+  const embed = async (audio) => { lengths.push(audio.length); return audio[0] > 0 ? ME_LIKE : THEM_LIKE; };
+  const session = createSession({ embed, transcribe: fakeTranscribe([{}, {}]), speakers, onEvent: () => {} });
+  const audio = new Float32Array(72000).fill(0.5);
+  audio.fill(-0.5, 24000);
+  session.segment({ audio, startedAt: 0, durationMs: 4500, open: false });
+  await session.drain();
+  assert.deepEqual(lengths.slice(5), [24000, 48000]);
+});
+
+test('shouldScan: long segments only, and only while the embedding backlog is within real time', () => {
+  assert.equal(shouldScan(2999, 0), false);
+  assert.equal(shouldScan(3000, 0), true);
+  assert.equal(shouldScan(8000, BACKLOG_SKIP_MS), true);
+  assert.equal(shouldScan(8000, BACKLOG_SKIP_MS + 1), false);
+});
+
+test('a backlog of embedding skips the window scan until it recovers, with no error', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let first = true;
+  const embed = async (audio) => {
+    if (first) { first = false; await gate; }
+    return audio[0] > 0 ? ME_LIKE : THEM_LIKE;
+  };
+  const session = createSession({ embed, transcribe: fakeTranscribe([{}]), speakers, onEvent });
+  const long = (t) => ({ audio: new Float32Array(72000).fill(0.5), startedAt: t, durationMs: 4500, open: false });
+  // The first segment's scan stalls while four more (18 s of audio) pile up
+  // behind it: the second then has 13.5 s queued behind it and is labelled
+  // whole; by the third the queue is back under 10 s and scanning resumes.
+  session.segment(long(0));
+  await sleep(5);
+  for (let i = 1; i < 5; i++) session.segment(long(i * 5000));
+  release();
+  await session.drain();
+
+  const labelled = events.filter((e) => e.type === 'labelled');
+  assert.deepEqual(labelled.map((e) => e.scanned), [true, false, true, true, true]);
+  assert.deepEqual(labelled.map((e) => e.backlogMs), [18000, 13500, 9000, 4500, 0]);
+  assert.equal(events.filter((e) => e.type === 'error').length, 0);
+});
+
+// Final review, finding 4: the Groq queue was unbounded.
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+test('the upload queue runs two at a time, in order', async () => {
+  const q = createUploadQueue();
+  const started = [];
+  const jobs = [0, 1, 2, 3].map(() => deferred());
+  const outcomes = jobs.map((job, i) => q.enqueue(() => { started.push(i); return job.promise; }, 1000));
+  assert.deepEqual(started, [0, 1]);
+  jobs[0].resolve('a');
+  await sleep(1);
+  assert.deepEqual(started, [0, 1, 2]);
+  jobs[1].reject(new Error('x'));
+  jobs[2].resolve('c');
+  jobs[3].resolve('d');
+  const out = await Promise.all(outcomes);
+  assert.deepEqual(out.map((o) => o.ok), [true, false, true, true]);
+  assert.equal(out[0].value, 'a');
+});
+
+test('past the cap the oldest waiting segment is dropped with an error, and late is reported', async () => {
+  const late = [];
+  const dropped = [];
+  const q = createUploadQueue({ onLate: (v) => late.push(v), onDrop: (ms) => dropped.push(ms) });
+  const hold = deferred();
+  q.enqueue(() => hold.promise, 8000);
+  q.enqueue(() => hold.promise, 8000);
+  const waiting = [];
+  for (let i = 0; i < 9; i++) waiting.push(q.enqueue(async () => 'ok', 8000));
+  assert.ok(q.waitingMs() <= CAP_MS, `holds ${q.waitingMs()} ms`);
+  assert.deepEqual(dropped, [8000, 8000], '72 s queued, two oldest 8 s segments dropped to fit 60 s');
+  assert.deepEqual(late, [true], `late once waiting audio reached ${LATE_MS} ms`);
+  const first = await waiting[0];
+  assert.equal(first.ok, false);
+  assert.equal(first.error.message, DROPPED_MESSAGE);
+  hold.resolve('done');
+  const rest = await Promise.all(waiting.slice(2));
+  assert.ok(rest.every((o) => o.ok));
+  assert.deepEqual(late, [true, false], 'recovered once the queue emptied');
+});
+
+test('close() drops every waiting upload silently and refuses new ones', async () => {
+  const q = createUploadQueue();
+  const hold = deferred();
+  let ran = 0;
+  q.enqueue(() => hold.promise);
+  q.enqueue(() => hold.promise);
+  const parked = q.enqueue(async () => { ran++; });
+  q.close();
+  assert.deepEqual(await parked, { ok: false, dropped: true });
+  assert.deepEqual(await q.enqueue(async () => { ran++; }), { ok: false, dropped: true });
+  hold.resolve();
+  await sleep(1);
+  assert.equal(ran, 0, 'nothing started after close');
+});
+
+test('session.close() aborts in-flight uploads, drops queued ones, and emits nothing after', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const signals = [];
+  let calls = 0;
+  const transcribe = (audio, signal) => {
+    calls++;
+    signals.push(signal);
+    return new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+    });
+  };
+  const session = createSession({ embed: fakeEmbed, transcribe, speakers, onEvent });
+  for (let i = 0; i < 4; i++) session.segment(seg('me', i * 1000));
+  await sleep(10);
+  assert.equal(calls, 2, 'two in flight, two waiting');
+  session.close();
+  await session.drain();
+  session.segment(seg('me', 9000));
+  await sleep(10);
+  assert.equal(calls, 2, 'nothing was uploaded after close');
+  assert.ok(signals.every((s) => s.aborted));
+  assert.equal(events.filter((e) => e.type === 'error' || e.type === 'bubble').length, 0);
+});
+
+test('a session whose Groq backs up says so through a status event', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const hold = deferred();
+  const session = createSession({ embed: fakeEmbed, transcribe: () => hold.promise.then(() => ({ text: 'Hi.', lang: 'en' })), speakers, onEvent });
+  for (let i = 0; i < 6; i++) session.segment(seg('me', i * 3000, { durationMs: 2900 }));
+  await sleep(10);
+  assert.deepEqual(events.filter((e) => e.type === 'status').map((e) => e.text), [LATE_STATUS]);
+  hold.resolve();
+  await session.drain();
+  assert.deepEqual(events.filter((e) => e.type === 'status').map((e) => e.text), [LATE_STATUS, '']);
 });
