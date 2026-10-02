@@ -135,4 +135,17 @@ pipeline's labels and timing, never Whisper's accuracy.
 
 ## Known debt
 
-None yet.
+- Copied modules (`lib/*`, `recorder-worklet.js`) drift from the extension; `docs/ORIGIN.md`
+  names the commit they were taken from.
+- The enrollment reads a fixed English text, so the print is built from one language only.
+- No live line where on-device recognition is missing (most phones); the meeting still works,
+  with Groq transcripts only.
+- The speaker model is downloaded from Hugging Face on first use; offline first runs fail.
+- One-word backchannels are lost or mislabelled when they share a segment with the other voice.
+- The split point of segments of 3 s or more is biased up to 0.75 s early.
+- A segment that is not split is embedded twice.
+- The enrollment voiced floor (10th percentile capped at median / 2.5) and the speaker constants
+  (`MATCH_MIN`, `MARGIN`) are calibrated on synthetic voices only; a real-voice check must
+  recalibrate them.
+- The late-straggler race after «Terminar» is covered by unit tests only.
+- Not measured: a real phone, a real voice, real Groq, the browser's own translator.
