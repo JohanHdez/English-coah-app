@@ -14,8 +14,9 @@
 // embeddings, which grows with the segment, so it misattributes once segments are
 // split and forced-cut. The loudness envelope of the received audio is slid along
 // the fixture's; the best normalised correlation is where it came from. Every cue
-// the audio mostly covers is answered, in order, as a real recogniser would hear
-// a segment that straddles a handoff. The arrival-time answer is still recorded
+// the audio overlaps (0.3 s or more) is answered with the share of its words the
+// overlap covers, in order, as a real recogniser would hear a segment that
+// straddles a handoff. The arrival-time answer is still recorded
 // next to it (`arrivalCue`) so the two can be compared.
 
 import { createServer } from 'node:http';
@@ -25,6 +26,7 @@ const TAIL_S = 0.7;
 const FRAME = 800; // 50 ms at 16 kHz
 const MIN_FRAMES = 6;
 const MIN_SCORE = 0.5;
+const MIN_OVERLAP_S = 0.3;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const CORS = {
@@ -121,32 +123,41 @@ export async function startMockGroq({ manifest, delayMs = 900, wav = null }) {
       const keyOf = (cue) => (cue ? cue.key ?? manifest.cues.indexOf(cue) : null);
       const arrivalCue = bestAt(arrived - TAIL_S - seconds, arrived - TAIL_S);
       const placed = whole ? locate(whole, envelope(body.subarray(body.indexOf('RIFF') + 44, body.indexOf('RIFF') + 44 + Math.round(seconds * 32000)), 0)) : null;
-      let chosen;
+      const slices = [];
       let start = arrived - TAIL_S - seconds;
       let end = arrived - TAIL_S;
       if (placed && placed.score >= MIN_SCORE) {
         start = placed.start;
         end = start + seconds;
-        const main = bestAt(start, end);
-        chosen = manifest.cues.filter((cue) => cue === main
-          || overlapOf(cue, start, end) >= 0.5 * (cue.end - cue.start));
+        // A real recogniser transcribes whatever words fall in the audio: a cue the
+        // segment only partly overlaps contributes the matching share of its words.
+        for (const cue of manifest.cues) {
+          const overlap = overlapOf(cue, start, end);
+          if (overlap < MIN_OVERLAP_S) continue;
+          const toks = cue.text.split(/\s+/);
+          const dur = cue.end - cue.start;
+          const share = overlap / dur;
+          const k = share >= 0.97 ? toks.length : Math.max(1, Math.round(share * toks.length));
+          const from = Math.min(toks.length - k, Math.round((Math.max(0, start - cue.start) / dur) * toks.length));
+          slices.push({ cue: manifest.cues.indexOf(cue), from: share >= 0.97 ? 0 : from, to: (share >= 0.97 ? 0 : from) + k });
+        }
       } else {
-        chosen = arrivalCue ? [arrivalCue] : [];
+        if (arrivalCue) slices.push({ cue: manifest.cues.indexOf(arrivalCue), from: 0, to: arrivalCue.text.split(/\s+/).length });
       }
       const language = fieldOf(text, 'language');
       const format = fieldOf(text, 'response_format');
       const entry = {
         n: requests.length + 1, at: Date.now(), seconds: Math.round(seconds * 10) / 10, language, format,
-        cue: chosen.length ? keyOf(chosen[0]) : null,
-        cues: chosen.map((c) => manifest.cues.indexOf(c)),
+        cue: slices.length ? keyOf(manifest.cues[slices[0].cue]) : null,
+        slices,
         arrivalCue: keyOf(arrivalCue),
         start: Math.round(start * 100) / 100,
         score: placed ? Math.round(placed.score * 100) / 100 : null,
       };
       requests.push(entry);
       await sleep(delayMs);
-      const out = { text: chosen.length ? chosen.map((c) => c.text).join(' ') : `[mock turn ${entry.n}]` };
-      if (format === 'verbose_json' && chosen.length) out.language = chosen[0].lang === 'es' ? 'spanish' : 'english';
+      const out = { text: slices.length ? slices.map((x) => manifest.cues[x.cue].text.split(/\s+/).slice(x.from, x.to).join(' ')).join(' ') : `[mock turn ${entry.n}]` };
+      if (format === 'verbose_json' && slices.length) out.language = manifest.cues[slices[0].cue].lang === 'es' ? 'spanish' : 'english';
       res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' });
       res.end(JSON.stringify(out));
     });

@@ -56,8 +56,8 @@ different cue for 5 to 13 of 17 to 18 requests per run: with step 5b a segment w
 embeddings of its windows, which grows with the segment, and a forced cut carries no closing silence
 at all. The copy now takes the fixture's WAV (`wav`), slides the received audio's loudness envelope
 along the fixture's to find where it came from (normalised correlation, 50 ms frames), and answers
-with every cue the audio covers by at least half of that cue, in order, so a segment straddling a
-handoff is transcribed the way a real recogniser would. Arrival time stays as the fallback when no
+with the share of each overlapped cue's words (at least one word from 0.3 s of overlap), in order, so a
+segment straddling a handoff is transcribed the way a real recogniser would, minority words included. Arrival time stays as the fallback when no
 fixture is given or the best correlation is under 0.5, and each logged request keeps the
 arrival-time cue as `arrivalCue` for comparison.
 

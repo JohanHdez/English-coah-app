@@ -123,15 +123,13 @@ numbers.
 `e2e/.profile` against one loopback port (IndexedDB and the cached voice model are per origin): the
 first launch plays `enroll-<learner>-<condition>.wav` into the real enrollment screen, so the print
 comes from the app's own code; the second plays the conversation into the real meeting screen, with
-Groq replaced by `e2e/mock-groq.mjs` (settings carry a `groqBase`, no UI field) and any request to
-api.groq.com failing the run. The stand-in places each received segment on the fixture by sliding its
-loudness envelope along the fixture's, and answers with the cues that audio covers; the arrival-time
+Groq replaced by `e2e/mock-groq.mjs` (settings carry a `groqBase`, no UI field) and any request to a host other than loopback and the model's (Hugging Face) failing the run. The stand-in places each received segment on the fixture by sliding its
+loudness envelope along the fixture's, and answers with the share of each overlapped cue's words (at least one word from 0.3 s of overlap), so a segment holding both speakers yields mixed text; the arrival-time
 guess is logged beside it and the run prints how often the two disagree. It prints, per cue, the
 truth against the bubble's speaker, the latency from the cue's end to its last word appearing in a
 bubble, and word coverage, then accuracy weighted by words, mixed bubbles (one bubble holding cues of
-both speakers), latency p50/p90, errors and console errors, and saves everything to `e2e/results/`.
-Measured limits: latency is relative to the moment the microphone stream resolved, and a cue that
-two neighbouring segments both overlap can be answered twice (words matched above 100 %). Chrome
+both speakers), audio-mixed requests (segments whose audio holds both), latency p50/p90, errors and console errors, and saves everything to `e2e/results/` with a timestamped name; it exits non-zero on console errors or error events.
+Measured limits: latency is relative to the moment the microphone stream resolved, Chrome
 cannot grant tab audio headlessly, and no real transcription is involved: the run measures the
 pipeline's labels and timing, never Whisper's accuracy.
 

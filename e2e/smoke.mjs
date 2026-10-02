@@ -15,14 +15,9 @@
 import { join } from 'node:path';
 import { Chrome } from './cdp.mjs';
 import { startMockGroq } from './mock-groq.mjs';
-import { PROFILE, FIXTURES, sleep, waitFor, startServer, openPage, assertNoExternal, enrollViaUi, resetStorage } from './harness.mjs';
+import { PROFILE, FIXTURES, sleep, waitFor, startServer, openPage, assertNoExternal, enrollViaUi, resetStorage, DRAIN_TIMEOUT_MS, FAKE_KEY } from './harness.mjs';
 
 const AUDIO = join(FIXTURES, 'enroll-paulina-room.wav');
-// Mirrors ui/meeting.js's own DRAIN_TIMEOUT_MS bound on "Terminar": the wait
-// here just needs to outlast it so a real hang (not the bound firing) is what
-// would time out this step.
-const DRAIN_TIMEOUT_MS = 35000;
-const FAKE_KEY = 'gsk_smoke_test_fake_key_0000000000';
 // No real conversation manifest is needed: a single cue spanning the whole run
 // matches whatever audio the mock receives, so every transcription request gets
 // the same fixed, harmless text back.

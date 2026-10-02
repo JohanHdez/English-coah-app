@@ -21,11 +21,11 @@ export function score({ manifest, micT0, events, requests }) {
   const stream = [];
   const sorted = [...requests].sort((a, b) => a.start - b.start || a.n - b.n);
   sorted.forEach((req, r) => {
-    const list = req.cues.length ? req.cues : [-1];
-    for (const c of list) {
-      const toks = c >= 0 ? words(cues[c].text) : words(`mock turn ${req.n}`);
-      toks.forEach((w, i) => stream.push({ w, cue: c, req: r, first: i === 0 && c === list[0] }));
-    }
+    const list = req.slices.length ? req.slices : [{ cue: -1 }];
+    list.forEach((sl, li) => {
+      const toks = sl.cue >= 0 ? words(cues[sl.cue].text.split(/\s+/).slice(sl.from, sl.to).join(' ')) : words(`mock turn ${req.n}`);
+      toks.forEach((w, i) => stream.push({ w, cue: sl.cue, req: r, first: i === 0 && li === 0 }));
+    });
   });
 
   // Replays the stream against the bubbles' words; a mismatch jumps to the next
@@ -94,6 +94,7 @@ export function score({ manifest, micT0, events, requests }) {
   const correctWords = perCue.reduce((n, c) => n + (c.truth === 'me' ? c.me : c.them), 0);
   const latencies = perCue.map((c) => c.latencyS).filter((v) => v !== null).sort((a, b) => a - b);
   const placed = requests.filter((r) => r.score !== null);
+  const audioMixed = requests.filter((r) => new Set(r.slices.map((x) => cues[x.cue].speaker)).size > 1).length;
 
   return {
     perCue,
@@ -102,6 +103,7 @@ export function score({ manifest, micT0, events, requests }) {
       cuesHeard: perCue.filter((c) => c.matched).length,
       bubbles: bubbles.length,
       mixedBubbles: mixed,
+      audioMixedRequests: audioMixed,
       words: matchedWords,
       accuracy: matchedWords ? correctWords / matchedWords : null,
       latencyP50: quantile(latencies, 0.5),

@@ -23,10 +23,12 @@ export const ROOT = resolve(HERE, '..');
 export const PROFILE = join(HERE, '.profile');
 export const FIXTURES = join(HERE, 'fixtures');
 export const MODEL_LOAD_TIMEOUT_MS = 10 * 60 * 1000;
+// Mirrors ui/meeting.js's DRAIN_TIMEOUT_MS: a wait that outlasts it is a real hang.
+export const DRAIN_TIMEOUT_MS = 35000;
 export const FAKE_KEY = 'gsk_e2e_mock_key_0000000000';
 const PORT = 47831;
-// Mirrors ui/meeting.js's DRAIN_TIMEOUT_MS: a wait that outlasts it is a real hang.
-const DRAIN_TIMEOUT_MS = 35000;
+// The one allowed exception: the app's own voice-model download.
+const MODEL_HOSTS = /(^|\.)(huggingface\.co|hf\.co)$|^cdn-lfs/;
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -53,7 +55,7 @@ export async function startServer() {
 }
 
 // Opens the app and records what the run must report: console errors and
-// exceptions, and every request that would have reached the real Groq API.
+// exceptions, and every request to a host other than loopback and the model's.
 export async function openPage(chrome, base, { initScript } = {}) {
   const page = { errors: [], externalRequests: [] };
   const { targetId } = await chrome.send('Target.createTarget', { url: 'about:blank' });
@@ -71,7 +73,10 @@ export async function openPage(chrome, base, { initScript } = {}) {
       page.errors.push(`[exception] ${params.exceptionDetails.exception?.description || params.exceptionDetails.text}`);
     } else if (method === 'Network.requestWillBeSent') {
       const url = params.request?.url || '';
-      if (/api\.groq\.com/.test(url)) page.externalRequests.push(url);
+      if (/^https?:/.test(url)) {
+        const host = new URL(url).hostname;
+        if (host !== '127.0.0.1' && !MODEL_HOSTS.test(host)) page.externalRequests.push(url);
+      }
     }
   });
   await chrome.send('Page.navigate', { url: `${base}/` }, session);
@@ -88,7 +93,7 @@ export async function resetStorage(chrome, session) {
 
 export function assertNoExternal(externalRequests, label) {
   if (externalRequests.length) {
-    throw new Error(`[${label}] ${externalRequests.length} request(s) reached the real Groq API: ${externalRequests.slice(0, 3).join(', ')}`);
+    throw new Error(`[${label}] ${externalRequests.length} request(s) left the machine (only 127.0.0.1 and the model hosts are allowed): ${externalRequests.slice(0, 3).join(', ')}`);
   }
 }
 

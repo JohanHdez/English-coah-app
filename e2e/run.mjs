@@ -43,6 +43,7 @@ console.log('\ntotals');
 console.log(`  speaker accuracy (words)  ${pct(totals.accuracy)} of ${totals.words} words`);
 console.log(`  cues heard                ${totals.cuesHeard}/${totals.cues}`);
 console.log(`  bubbles                   ${totals.bubbles} (${totals.mixedBubbles} mixed)`);
+console.log(`  audio-mixed requests      ${totals.audioMixedRequests}/${totals.requests} (segments whose audio holds both speakers)`);
 console.log(`  latency after cue end     p50 ${fmt(totals.latencyP50)} s · p90 ${fmt(totals.latencyP90)} s`);
 console.log(`  stand-in requests         ${totals.requests} (${totals.skippedRequests} never reached a bubble, ${totals.unmatchedWords} bubble words unmatched)`);
 console.log(`  stand-in matching         audio alignment placed ${totals.alignedRequests}/${totals.requests}; arrival time alone would have picked another cue for ${totals.arrivalDisagrees}`);
@@ -50,8 +51,10 @@ console.log(`  error events              ${totals.errorEvents}`);
 console.log(`  console errors            ${run.errors.length}`);
 for (const e of run.errors.slice(0, 5)) console.log(`    ${e}`);
 
+if (run.errors.length || totals.errorEvents) process.exitCode = 1;
+
 const dir = join(FIXTURES, '..', 'results');
 mkdirSync(dir, { recursive: true });
-const file = join(dir, `run-${new Date().toISOString().slice(0, 10)}-${slug(learner)}-${slug(other)}-${condition}.json`);
+const file = join(dir, `run-${new Date().toISOString().replace(/[:.]/g, '-')}-${slug(learner)}-${slug(other)}-${condition}.json`);
 writeFileSync(file, JSON.stringify({ args: { learner, other, condition, delayMs, lang }, totals, perCue, run }, null, 1));
 console.log(`\nsaved ${file}`);
