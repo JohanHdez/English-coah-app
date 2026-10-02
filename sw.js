@@ -1,14 +1,16 @@
-// App-shell cache only. Hugging Face's model weights are cached by
-// transformers.js itself (env.useBrowserCache, large and content-addressed,
-// fetched on demand). vendor/ (transformers.js, the ONNX Runtime WASM) is
-// same-origin but deliberately left out of SHELL_FILES below — large, and only
-// needed once enrollment or a meeting actually runs — so an offline cold start
-// cannot load the voice model unless the browser's own HTTP cache still happens
-// to hold those files. Groq responses must never be cached (they carry the
-// meeting's audio transcript), so the fetch handler below writes to the cache
-// only for the exact URLs in SHELL_FILES — every other same-origin GET is left
-// for the browser to fetch normally, uncached.
-const CACHE_NAME = 'ec-shell-v2';
+// App-shell cache, plus vendor/ in a cache of its own. Hugging Face's model
+// weights are cached by transformers.js itself (env.useBrowserCache). vendor/
+// (transformers.js and the 12.9 MB ONNX Runtime WASM) is not precached — it is
+// needed only once enrollment or a meeting runs — but the first time any of it
+// is fetched it is kept, cache-first, under VENDOR_CACHE: otherwise every new
+// embed worker depends on the browser's HTTP cache, which a static host's short
+// max-age makes revalidate, and an evicted WASM downloads again on mobile data.
+// The files never change under one name; replacing vendor/ means bumping
+// VENDOR_CACHE. Groq responses must never be cached (they carry the meeting's
+// audio transcript): the fetch handler writes only the exact SHELL_FILES URLs and
+// same-origin GETs under vendor/; every other request is left to the network.
+const CACHE_NAME = 'ec-shell-v3';
+const VENDOR_CACHE = 'ec-vendor-v1';
 const SHELL_FILES = [
   './',
   'index.html',
@@ -40,6 +42,7 @@ const SHELL_FILES = [
 // Resolved the same way `cache.addAll` resolves them, so a request's exact URL can
 // be checked against this set without re-deriving the relative path from a URL.
 const SHELL_URLS = new Set(SHELL_FILES.map((path) => new URL(path, self.location.href).href));
+const VENDOR_PREFIX = new URL('vendor/', self.location.href).href;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -51,7 +54,9 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((names) =>
       Promise.all(
-        names.filter((name) => name.startsWith('ec-shell-') && name !== CACHE_NAME).map((name) => caches.delete(name))
+        names
+          .filter((name) => (name.startsWith('ec-shell-') && name !== CACHE_NAME) || (name.startsWith('ec-vendor-') && name !== VENDOR_CACHE))
+          .map((name) => caches.delete(name))
       )
     ).then(() => self.clients.claim())
   );
@@ -60,6 +65,10 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
+  if (request.url.startsWith(VENDOR_PREFIX) && !request.headers.has('range')) {
+    event.respondWith(vendorFirst(event));
+    return;
+  }
   if (!SHELL_URLS.has(request.url)) return; // not part of the shell: normal network fetch, never cached
 
   event.respondWith(
@@ -72,3 +81,15 @@ self.addEventListener('fetch', (event) => {
       .catch(() => caches.match(request))
   );
 });
+
+async function vendorFirst(event) {
+  const { request } = event;
+  const cache = await caches.open(VENDOR_CACHE);
+  const hit = await cache.match(request, { ignoreSearch: true });
+  if (hit) return hit;
+  const response = await fetch(request);
+  if (response.ok && response.status === 200 && response.type === 'basic') {
+    event.waitUntil(cache.put(request, response.clone()).catch(() => {}));
+  }
+  return response;
+}
