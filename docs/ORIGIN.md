@@ -46,3 +46,22 @@ guarded so importing the file for that pure function stays possible under
 lazily). Everything else in the file — the 100 ms block size, the RMS
 calculation, the message shape posted to the main thread — is unchanged from
 the extension's copy.
+
+## `e2e/mock-groq.mjs`: diverged from the copy (Task 7)
+
+The conversation manifests' cues carry no `key`, so a cue's index stands in for it. The extension's
+stand-in places a request by its arrival time minus a fixed 0.7 s closing silence. Measured against
+the app (the arrival-time guess against where the audio actually sits on the fixture), that picks a
+different cue for 5 to 13 of 17 to 18 requests per run: with step 5b a segment waits for the
+embeddings of its windows, which grows with the segment, and a forced cut carries no closing silence
+at all. The copy now takes the fixture's WAV (`wav`), slides the received audio's loudness envelope
+along the fixture's to find where it came from (normalised correlation, 50 ms frames), and answers
+with every cue the audio covers by at least half of that cue, in order, so a segment straddling a
+handoff is transcribed the way a real recogniser would. Arrival time stays as the fallback when no
+fixture is given or the best correlation is under 0.5, and each logged request keeps the
+arrival-time cue as `arrivalCue` for comparison.
+
+## `app.js`: the loopback hook
+
+`window.__ec.events` (only on 127.0.0.1) now stores a copy of each event's entry, since the session
+keeps mutating the entry as later pieces fold into it and the harness needs every intermediate text.

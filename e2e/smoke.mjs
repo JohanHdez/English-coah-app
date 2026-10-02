@@ -12,17 +12,12 @@
 //
 // Usage: node e2e/smoke.mjs
 
-import { join, dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { Chrome } from './cdp.mjs';
-import { serve } from '../tools/serve.mjs';
 import { startMockGroq } from './mock-groq.mjs';
+import { PROFILE, FIXTURES, sleep, waitFor, startServer, openPage, assertNoExternal, enrollViaUi, resetStorage } from './harness.mjs';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(HERE, '..');
-const PROFILE = join(HERE, '.profile');
-const AUDIO = join(HERE, 'fixtures', 'enroll-paulina-room.wav');
-const MODEL_LOAD_TIMEOUT_MS = 10 * 60 * 1000;
+const AUDIO = join(FIXTURES, 'enroll-paulina-room.wav');
 // Mirrors ui/meeting.js's own DRAIN_TIMEOUT_MS bound on "Terminar": the wait
 // here just needs to outlast it so a real hang (not the bound firing) is what
 // would time out this step.
@@ -33,46 +28,20 @@ const FAKE_KEY = 'gsk_smoke_test_fake_key_0000000000';
 // the same fixed, harmless text back.
 const MOCK_MANIFEST = { cues: [{ key: 'smoke', start: 0, end: 24 * 60 * 60, lang: 'en', text: 'Hello, this is a smoke test.' }] };
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function waitFor(fn, { timeoutMs = 30000, everyMs = 300, label = 'condition' } = {}) {
-  const t0 = Date.now();
-  for (;;) {
-    const value = await fn();
-    if (value) return value;
-    if (Date.now() - t0 > timeoutMs) throw new Error(`[smoke] timed out waiting for ${label}`);
-    await sleep(everyMs);
-  }
-}
-
 const bubbleCount = (chrome, session) =>
   chrome.evaluate(session, "document.querySelectorAll('.meeting .transcript .bubble').length");
 
 async function main() {
-  const server = await serve({ root: ROOT, port: 0 });
-  const base = `http://127.0.0.1:${server.address().port}`;
+  const { base, close: closeServer } = await startServer();
   const mock = await startMockGroq({ manifest: MOCK_MANIFEST, delayMs: 300 });
   const chrome = await Chrome.launch({ profile: PROFILE, headless: true, audioFile: AUDIO });
 
-  const errors = [];
-  const externalRequests = [];
+  let page;
   let session;
   try {
-    const { targetId } = await chrome.send('Target.createTarget', { url: `${base}/` });
-    session = await chrome.attach(targetId);
-    await chrome.send('Runtime.enable', {}, session);
-    await chrome.send('Network.enable', {}, session);
-    chrome.on((method, params, sid) => {
-      if (sid !== session) return;
-      if (method === 'Runtime.consoleAPICalled' && params.type === 'error') {
-        errors.push(`[console] ${params.args.map((a) => a.value ?? a.description ?? '').join(' ')}`);
-      } else if (method === 'Runtime.exceptionThrown') {
-        errors.push(`[exception] ${params.exceptionDetails.exception?.description || params.exceptionDetails.text}`);
-      } else if (method === 'Network.requestWillBeSent') {
-        const url = params.request?.url || '';
-        if (/api\.groq\.com/.test(url)) externalRequests.push(url);
-      }
-    });
+    page = await openPage(chrome, base);
+    session = page.session;
+    await resetStorage(chrome, session);
 
     // --- Consent -----------------------------------------------------------
     const h1 = await waitFor(
@@ -114,31 +83,7 @@ async function main() {
     `);
 
     // --- Enrollment ----------------------------------------------------------
-    await waitFor(
-      () => chrome.evaluate(session, "document.querySelector('.screen.enroll') != null"),
-      { label: 'the enrollment screen to render' },
-    );
-    console.log('enrollment: screen rendered, waiting for the voice model to load…');
-    const t0 = Date.now();
-    await waitFor(
-      () => chrome.evaluate(session, "document.querySelector('.enroll button.primary')?.disabled === false"),
-      { timeoutMs: MODEL_LOAD_TIMEOUT_MS, everyMs: 1000, label: 'the voice model to finish loading' },
-    );
-    console.log(`enrollment: model ready in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
-
-    await chrome.evaluate(session, "document.querySelector('.enroll button.primary').click();");
-    console.log('enrollment: recording started (fake microphone: enroll-paulina-room.wav)');
-    const t1 = Date.now();
-    await waitFor(
-      async () => {
-        const print = await chrome.evaluate(session, "import('./store.js').then((m) => m.get('print'))");
-        const status = await chrome.evaluate(session, "document.querySelector('.enroll .status')?.textContent || ''");
-        if (status && /No te oí lo suficiente/.test(status)) throw new Error(`[smoke] enrollment reported: ${status}`);
-        return print || null;
-      },
-      { timeoutMs: 60000, everyMs: 500, label: 'the print to be stored' },
-    );
-    console.log(`enrollment: finished recording + embedding in ${((Date.now() - t1) / 1000).toFixed(1)} s`);
+    await enrollViaUi(chrome, session, console.log);
 
     // --- Read the print back --------------------------------------------------
     const print = await chrome.evaluate(session, "import('./store.js').then((m) => m.get('print'))");
@@ -240,14 +185,12 @@ async function main() {
     }
     console.log(`meeting: lastTranscript marked finished (finishedAt ${new Date(savedAfterStop.finishedAt).toISOString()}, ${savedAfterStop.entries.length} entries)`);
 
-    if (externalRequests.length) {
-      throw new Error(`[smoke] ${externalRequests.length} request(s) reached the real Groq API: ${externalRequests.slice(0, 3).join(', ')}`);
-    }
+    assertNoExternal(page.externalRequests, 'smoke');
     console.log(`network: 0 requests reached api.groq.com (the mock handled ${mock.requests.length})`);
 
-    if (errors.length) {
-      console.error(`\n${errors.length} console error(s)/exception(s) during the run:`);
-      for (const e of errors) console.error(' -', e);
+    if (page.errors.length) {
+      console.error(`\n${page.errors.length} console error(s)/exception(s) during the run:`);
+      for (const e of page.errors) console.error(' -', e);
       process.exitCode = 1;
     } else {
       console.log('\nno console errors or uncaught exceptions during the whole run.');
@@ -255,7 +198,7 @@ async function main() {
   } finally {
     await chrome.close();
     await mock.close();
-    await new Promise((r) => server.close(r));
+    await closeServer();
   }
 }
 

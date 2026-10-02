@@ -59,7 +59,7 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 | `session.js` + `session.test.js` | Segment → print → speaker → transcription → bubbles; pure orchestration with injected dependencies | 5 |
 | `capture.js` `transcribe.js` | Microphone + worklet + Segmenter; Groq call | 5 |
 | `store.js` `translate.js` `ui/*.js` | Device storage, translation, screens | 6 |
-| `e2e/mock-groq.mjs` `e2e/run.mjs` `e2e/harness.mjs` | The whole app in Chrome with a fake mic and a Groq stand-in | 7 |
+| `e2e/mock-groq.mjs` `e2e/run.mjs` `e2e/harness.mjs` `e2e/score.mjs` `e2e/smoke.mjs` | The whole app in Chrome with a fake mic and a Groq stand-in, scored per cue; a UI smoke test | 6, 7 |
 | `README.md` `CLAUDE.md` `docs/ORIGIN.md` | Documentation | 1, 8 |
 
 ## Runtime contexts
@@ -96,6 +96,10 @@ node e2e/speakers.mjs                        # speaker accuracy: embed in Chrome
 node e2e/speakers.mjs --only=paulina-tessa   # embed only fixtures whose name contains this (not with --replay)
 node e2e/speakers.mjs --replay=e2e/results/speakers-<date>-vectors.json
                                              # re-decide saved vectors only, no Chrome
+node e2e/smoke.mjs                           # consent → settings → enrollment → meeting → Ajustes → Terminar
+node e2e/run.mjs Paulina Samantha --condition=room     # the whole app on one conversation, scored per cue
+node e2e/run.mjs Mónica Daniel --condition=room
+node e2e/run.mjs Paulina Mónica --condition=room       # options: --condition=clean, --delay=<stand-in ms>, --lang=multi
 ```
 
 `e2e/speakers.mjs` builds any missing fixture, serves the repo in-process, opens
@@ -113,7 +117,23 @@ decisions. About 12 minutes for 1 516 embeddings; a `--replay` (no Chrome, no em
 every fixture against all 20 possible openings. The first embedding run downloads the model
 (6.7 MB from Hugging Face) and needs network, later runs read it from the profile's cache. Output
 goes to `e2e/results/` (git-ignored): `speakers-<date>.json` and the vectors file. Quote its
-numbers; Task 7 adds `node e2e/run.mjs` (the whole app with a fake microphone).
+numbers.
+
+`e2e/run.mjs <learner> <other>` takes about two minutes. It launches headless Chrome twice on
+`e2e/.profile` against one loopback port (IndexedDB and the cached voice model are per origin): the
+first launch plays `enroll-<learner>-<condition>.wav` into the real enrollment screen, so the print
+comes from the app's own code; the second plays the conversation into the real meeting screen, with
+Groq replaced by `e2e/mock-groq.mjs` (settings carry a `groqBase`, no UI field) and any request to
+api.groq.com failing the run. The stand-in places each received segment on the fixture by sliding its
+loudness envelope along the fixture's, and answers with the cues that audio covers; the arrival-time
+guess is logged beside it and the run prints how often the two disagree. It prints, per cue, the
+truth against the bubble's speaker, the latency from the cue's end to its last word appearing in a
+bubble, and word coverage, then accuracy weighted by words, mixed bubbles (one bubble holding cues of
+both speakers), latency p50/p90, errors and console errors, and saves everything to `e2e/results/`.
+Measured limits: latency is relative to the moment the microphone stream resolved, and a cue that
+two neighbouring segments both overlap can be answered twice (words matched above 100 %). Chrome
+cannot grant tab audio headlessly, and no real transcription is involved: the run measures the
+pipeline's labels and timing, never Whisper's accuracy.
 
 ## Known debt
 
