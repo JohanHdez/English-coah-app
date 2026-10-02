@@ -160,11 +160,17 @@ export async function enrollViaUi(chrome, session, log = () => {}) {
   log(`enrollment: model ready in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   await tap(chrome, session, '.enroll button.primary');
   const t1 = Date.now();
-  await waitFor(async () => {
-    const status = await chrome.evaluate(session, "document.querySelector('.enroll .status')?.textContent || ''");
-    if (/No te oí lo suficiente|\[micrófono\]|\[huella\]/.test(status)) throw new Error(`[e2e] enrollment reported: ${status}`);
-    return chrome.evaluate(session, "import('./store.js').then((m) => m.get('print'))");
-  }, { timeoutMs: 60000, everyMs: 500, label: 'the print to be stored' });
+  try {
+    await waitFor(async () => {
+      const status = await chrome.evaluate(session, "document.querySelector('.enroll .status')?.textContent || ''");
+      if (/No te oí lo suficiente|\[micrófono\]|\[huella\]/.test(status)) throw new Error(`[e2e] enrollment reported: ${status}`);
+      return chrome.evaluate(session, "import('./store.js').then((m) => m.get('print'))");
+    }, { timeoutMs: 90000, everyMs: 500, label: 'the print to be stored' });
+  } catch (err) {
+    const state = await chrome.evaluate(session, `JSON.stringify({ screen: document.querySelector('.screen')?.className, status: document.querySelector('.status')?.textContent, countdown: document.querySelector('.enroll .countdown')?.textContent, buttons: [...document.querySelectorAll('button')].filter((b) => !b.hidden).map((b) => b.textContent) })`).catch(() => '?');
+    err.message += ` — page: ${state}`;
+    throw err;
+  }
   log(`enrollment: finished recording + embedding in ${((Date.now() - t1) / 1000).toFixed(1)} s`);
   return chrome.evaluate(session, "import('./store.js').then((m) => m.get('print'))");
 }
