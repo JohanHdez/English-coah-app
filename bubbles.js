@@ -37,3 +37,26 @@ export function createMeetingGate() {
     close() { current++; },
   };
 }
+
+// One task at a time, in call order; a failing task does not stop the next. On a
+// phone (no built-in Translator) every translation is a Groq chat request, and
+// Groq's free tier caps requests per minute.
+export function createSerialQueue() {
+  let tail = Promise.resolve();
+  return function enqueue(task) {
+    const run = tail.then(task);
+    tail = run.catch(() => {});
+    return run;
+  };
+}
+
+// The transcript as stored: each entry carries the Spanish shown under it, so a
+// meeting continued later paints it without asking for it again. A translation of
+// words the bubble no longer holds is left out.
+export function withTranslations(entries, cache) {
+  return entries.map((entry) => {
+    const cached = cache.get(entry.t);
+    if (cached?.es && cached.text === entry.text) return { ...entry, es: cached.es };
+    return entry;
+  });
+}

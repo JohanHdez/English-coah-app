@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { foldTranslation, nearBottom, createMeetingGate } from './bubbles.js';
+import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations } from './bubbles.js';
 
 test('foldTranslation: a brand new bubble carries no translation yet', () => {
   assert.deepEqual(foldTranslation(undefined, 'Hello.'), { text: 'Hello.' });
@@ -81,4 +81,43 @@ test('createMeetingGate: a newer session supersedes an older one even without cl
   gate.bind(handler);
   first({ type: 'bubble', entry: { t: 1, text: 'Stale.' } });
   assert.deepEqual(seen, []);
+});
+
+test('createSerialQueue runs one task at a time, in order, past a failure', async () => {
+  const enqueue = createSerialQueue();
+  const log = [];
+  let running = 0;
+  const task = (name, ms, fail) => async () => {
+    running++;
+    assert.equal(running, 1, 'never two at once');
+    await new Promise((r) => setTimeout(r, ms));
+    log.push(name);
+    running--;
+    if (fail) throw new Error(name);
+    return name;
+  };
+  const a = enqueue(task('a', 15));
+  const b = enqueue(task('b', 1, true));
+  const c = enqueue(task('c', 5));
+  assert.equal(await a, 'a');
+  await assert.rejects(b, /b/);
+  assert.equal(await c, 'c');
+  assert.deepEqual(log, ['a', 'b', 'c']);
+});
+
+test('withTranslations stores the Spanish only for the words it translated', () => {
+  const entries = [
+    { t: 1, text: 'Hello.', speaker: 'them' },
+    { t: 2, text: 'How are you doing', speaker: 'them' },
+    { t: 3, text: 'Fine.', speaker: 'me' },
+  ];
+  const cache = new Map([
+    [1, { text: 'Hello.', es: 'Hola.' }],
+    [2, { text: 'How are you', es: '¿Cómo estás?' }],
+  ]);
+  const out = withTranslations(entries, cache);
+  assert.equal(out[0].es, 'Hola.');
+  assert.equal(out[1].es, undefined, 'stale: the bubble grew after it was translated');
+  assert.equal(out[2].es, undefined);
+  assert.equal(entries[0].es, undefined, 'the live entries are not mutated');
 });
