@@ -1,11 +1,10 @@
 // Delivers audio in 100 ms blocks (1600 samples at 16 kHz) together with their
-// RMS. Modified from the extension's copy (see docs/ORIGIN.md): some browsers
-// ignore the `sampleRate` requested of an AudioContext (and Firefox refuses to
-// connect a MediaStreamSource to a context whose rate differs from the
-// device's), so `capture.js` always tells this processor the context's real
-// rate via `processorOptions.inputRate`, and this file linearly resamples to
-// 16 kHz before anything downstream (the Segmenter, the 16 kHz contract every
-// other module in this repo assumes) ever sees a sample.
+// RMS. Modified from the extension's copy (see docs/ORIGIN.md): `capture.js`
+// runs its AudioContext at the device's native rate (Firefox will not connect a
+// microphone to a context at any other rate) and tells this processor that rate
+// via `processorOptions.inputRate`; this file linearly resamples to 16 kHz before
+// anything downstream (the Segmenter, the 16 kHz contract every other module in
+// this repo assumes) ever sees a sample.
 
 const OUT_RATE = 16000;
 const OUT_SIZE = 1600; // 100 ms at 16 kHz

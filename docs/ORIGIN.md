@@ -31,12 +31,12 @@ or in the extension is ported by hand; the two do not share history.
 
 The extension assumes its AudioContext is always 16 kHz, because the extension
 builds that context inside an offscreen document it fully controls. This PWA's
-`capture.js` cannot make that assumption on every device: some browsers ignore
-the `sampleRate` requested of `new AudioContext(...)`, and Firefox refuses to
-connect a `MediaStreamSource` to a context whose rate differs from the device's
-native one. `capture.js` now always passes the context's *actual* `sampleRate`
-to the worklet as `processorOptions.inputRate`, and this file linearly
-resamples to 16 kHz itself whenever that differs from the device's rate, before
+`capture.js` creates its AudioContext at the device's native rate (no
+`sampleRate` option): Firefox refuses to connect a `MediaStreamSource` to a
+context whose rate differs from the device's, and Safari's handling of a
+non-native rate fed by the microphone is untested. `capture.js` passes the
+context's actual `sampleRate` to the worklet as `processorOptions.inputRate`,
+and this file linearly resamples to 16 kHz itself whenever that differs, before
 emitting its usual 1600-sample (100 ms) blocks — the Segmenter and every other
 module in this repo still only ever sees 16 kHz audio. The resampling math
 (`resampleChunk`) is a pure, exported function with its own test
