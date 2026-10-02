@@ -9,6 +9,13 @@
   --border: #2d3135;
 }
 
+/* An author `display` rule beats the user-agent's [hidden] rule: without this the
+   hidden #overlay (display: flex, fixed, opaque) covered the whole app and took
+   every tap. element.click() from a script never noticed; a real tap does. */
+[hidden] {
+  display: none !important;
+}
+
 * {
   box-sizing: border-box;
 }
