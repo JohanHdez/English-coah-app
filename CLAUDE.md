@@ -33,7 +33,16 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
   nowhere else. Never log them, never put the key in a URL or query string, never send the
   voice print anywhere — only the key goes to Groq's own host.
 - The service worker (`sw.js`) never caches audio, POST requests, or cross-origin responses. It
-  precaches the app shell only; model weights are cached by transformers.js itself.
+  precaches the app shell, and keeps same-origin `vendor/` files cache-first in their own
+  versioned cache (`ec-vendor-v1`, filled on first use — bump it when `vendor/` is replaced);
+  model weights are cached by transformers.js itself.
+- Audio starts only on a tap: `capture.js`'s `createAudioContext()` is called synchronously in
+  the click handler («Empezar reunión», «Continuar», «Nueva reunión», «Reanudar», enrollment's
+  «Empezar») and handed to `startCapture`. Browsers leave a context made without a gesture
+  suspended. The harness taps with real mouse events (`tap()` in `e2e/harness.mjs`) and passes
+  no autoplay flag (no harness needs one), so it cannot hide a regression here;
+  `element.click()` from a script carries no user activation and ignores what covers the
+  element — it hid a closed overlay that covered the whole app until 2026-10-02.
 - User-visible errors are prefixed with the stage that produced them: `[micrófono]`, `[huella]`,
   `[groq]`, `[traducción]`.
 - Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
@@ -86,7 +95,7 @@ node --test lib/*.test.js  # the copied modules alone, if iterating on just thos
 ```
 
 Run the gate before claiming any change works, and reload the page (hard refresh, or unregister
-the service worker) afterwards — a stale `sw.js` will happily serve the old shell.
+the service worker) afterwards — a stale `sw.js` serves the old shell when offline, and the old `vendor/` files until `VENDOR_CACHE` is bumped.
 
 ## End-to-end
 
@@ -119,11 +128,18 @@ every fixture against all 20 possible openings. The first embedding run download
 goes to `e2e/results/` (git-ignored): `speakers-<date>.json` and the vectors file. Quote its
 numbers.
 
+`node e2e/run.mjs Paulina Samantha --condition=room --throttle=4` is the phone stand-in: the page
+is slowed 4× with `Emulation.setCPUThrottlingRate`, which DevTools refuses for workers, so the
+embed worker holds its thread for 3× each inference's own time (`slowdown` in
+`embed-worker.js`, set only through `window.__ec` on 127.0.0.1). The run prints embedding time per
+second of speech and how many long segments skipped the window scan. It is not a phone
+measurement.
+
 `e2e/run.mjs <learner> <other>` takes about two minutes. It launches headless Chrome twice on
 `e2e/.profile` against one loopback port (IndexedDB and the cached voice model are per origin): the
 first launch plays `enroll-<learner>-<condition>.wav` into the real enrollment screen, so the print
 comes from the app's own code; the second plays the conversation into the real meeting screen, with
-Groq replaced by `e2e/mock-groq.mjs` (settings carry a `groqBase`, no UI field) and any request to a host other than loopback and the model's (Hugging Face) failing the run. The stand-in places each received segment on the fixture by sliding its
+Groq replaced by `e2e/mock-groq.mjs` (settings carry a `groqBase`, no UI field) and any request — the page's or its workers' — to a host other than loopback and the model's exact hosts (`huggingface.co`, `us.aws.cdn.hf.co`) failing the run. The stand-in places each received segment on the fixture by sliding its
 loudness envelope along the fixture's, and answers with the share of each overlapped cue's words (at least one word from 0.3 s of overlap), so a segment holding both speakers yields mixed text; the arrival-time
 guess is logged beside it and the run prints how often the two disagree. It prints, per cue, the
 truth against the bubble's speaker, the latency from the cue's end to its last word appearing in a
@@ -143,7 +159,20 @@ pipeline's labels and timing, never Whisper's accuracy.
 - The speaker model is downloaded from Hugging Face on first use; offline first runs fail.
 - One-word backchannels are lost or mislabelled when they share a segment with the other voice.
 - The split point of segments of 3 s or more is biased up to 0.75 s early.
-- A segment that is not split is embedded twice.
+- **Open decision:** the spec's Phase 1 criterion "< 10 % mixed segments" is not met. After the
+  split, 12–24 % of transcription requests still hold both voices (`audio-mixed requests` in
+  `e2e/run.mjs`). Not tuned further; accepting it or working on the cut is the owner's call.
+- The phone CPU cost is emulated (`--throttle=4`), not measured; the scan skip under a backlog
+  (`BACKLOG_SKIP_MS` in `session.js`) saves little, because a whole long segment costs about as
+  much to embed as its windows.
+- Chrome's fake microphone (or the loaded machine) occasionally starves a run: an enrollment
+  reported «No te oí lo suficiente», a smoke meeting produced no bubble for 60 s — once each in
+  about ten runs on 2026-10-02, under heavy unrelated load; a rerun passed.
+- The first run downloads about 31.7 MB (measured: the model 6.7 MB from Hugging Face, plus
+  `vendor/transformers.js` 1.3 MB and the ONNX Runtime the worker actually loads,
+  `ort-wasm-simd-threaded.asyncify.{mjs,wasm}` 23.6 MB, uncompressed). The enrollment's
+  percentage covers the model files only; the runtime downloads under «Cargando el modelo de
+  voz…». The non-asyncify `ort-wasm-simd-threaded.{mjs,wasm}` in `vendor/` are never fetched.
 - The enrollment voiced floor (10th percentile capped at median / 2.5) and the speaker constants
   (`MATCH_MIN`, `MARGIN`) are calibrated on synthetic voices only; a real-voice check must
   recalibrate them.
