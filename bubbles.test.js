@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { foldTranslation, nearBottom, shouldPersist } from './bubbles.js';
+import { foldTranslation, nearBottom, createMeetingGate } from './bubbles.js';
 
 test('foldTranslation: a brand new bubble carries no translation yet', () => {
   assert.deepEqual(foldTranslation(undefined, 'Hello.'), { text: 'Hello.' });
@@ -41,22 +41,44 @@ test('nearBottom: a custom threshold is honoured', () => {
   assert.equal(nearBottom(1000, 900, 50, 40), false);
 });
 
-test('shouldPersist: a running meeting always persists its ordinary in-progress saves', () => {
-  assert.equal(shouldPersist(false, null), true);
+function recorder() {
+  const seen = [];
+  return { seen, handler: (event) => seen.push(event) };
+}
+
+test('createMeetingGate: an event from the current session is handled', () => {
+  const gate = createMeetingGate();
+  const { seen, handler } = recorder();
+  const onEvent = gate.bind(handler);
+  onEvent({ type: 'bubble', entry: { t: 1, text: 'Hello.' } });
+  assert.deepEqual(seen, [{ type: 'bubble', entry: { t: 1, text: 'Hello.' } }]);
 });
 
-test('shouldPersist: event after stop is ignored — a stopped meeting refuses an ordinary save', () => {
-  // This is the straggler case: a segment resolves after the 35 s drain bound
-  // already fired and "Terminar" moved on. Its ordinary save (finishedAt:
-  // null, the default) must not reach storage.
-  assert.equal(shouldPersist(true, null), false);
+test('createMeetingGate: an event that lands after Terminar is dropped', () => {
+  const gate = createMeetingGate();
+  const { seen, handler } = recorder();
+  const onEvent = gate.bind(handler);
+  gate.close();
+  onEvent({ type: 'bubble', entry: { t: 1, text: 'Late.' } });
+  assert.deepEqual(seen, []);
 });
 
-test('shouldPersist: finishedAt survives — the official Terminar write is never refused', () => {
-  const finishedAt = Date.now();
-  assert.equal(shouldPersist(true, finishedAt), true);
+test('createMeetingGate: an event from a previous meeting\'s session is dropped after Nueva reunión', () => {
+  const gate = createMeetingGate();
+  const { seen, handler } = recorder();
+  const oldSession = gate.bind(handler);
+  gate.close();
+  const newSession = gate.bind(handler);
+  oldSession({ type: 'error', text: '[groq] stale' });
+  newSession({ type: 'bubble', entry: { t: 2, text: 'Fresh.' } });
+  assert.deepEqual(seen, [{ type: 'bubble', entry: { t: 2, text: 'Fresh.' } }]);
 });
 
-test('shouldPersist: a finishedAt of 0 (falsy but explicit) still counts as "provided"', () => {
-  assert.equal(shouldPersist(true, 0), true);
+test('createMeetingGate: a newer session supersedes an older one even without close()', () => {
+  const gate = createMeetingGate();
+  const { seen, handler } = recorder();
+  const first = gate.bind(handler);
+  gate.bind(handler);
+  first({ type: 'bubble', entry: { t: 1, text: 'Stale.' } });
+  assert.deepEqual(seen, []);
 });

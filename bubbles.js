@@ -19,16 +19,21 @@ export function nearBottom(scrollHeight, scrollTop, clientHeight, thresholdPx = 
   return scrollHeight - scrollTop - clientHeight < thresholdPx;
 }
 
-// Whether a lastTranscript write should proceed, once ui/meeting.js's
-// "Terminar" has committed to ending the meeting (`stopped`, set after the
-// drain race against session.drain() settles — win or bound). The drain race
-// does not cancel its loser: a segment backed up behind MAX_INFLIGHT can still
-// resolve after the 35 s bound already fired and "Reunión terminada." is on
-// screen. Without this, that straggler's ordinary in-progress save
-// (finishedAt: null, the default) would silently clear the finishedAt marker
-// Terminar already wrote, reopening a meeting the learner explicitly ended —
-// exactly the bug the finishedAt marker exists to prevent. The official
-// Terminar write itself always carries its own finishedAt and is never refused.
-export function shouldPersist(stopped, finishedAt) {
-  return !stopped || finishedAt !== null;
+// Ties each transcription session's events to the meeting that produced it.
+// "Terminar"'s drain race does not cancel its loser, so a segment backed up
+// behind MAX_INFLIGHT can resolve after the meeting ended — or after "Nueva
+// reunión" started another one. Each session's handler is bound to the
+// generation current when it was created; close() ("Terminar") and every
+// later bind() ("Nueva reunión") move the generation on, so an event from an
+// earlier session is dropped instead of painting a stale bubble or error into
+// the new meeting, or clearing the finishedAt marker "Terminar" wrote.
+export function createMeetingGate() {
+  let current = 0;
+  return {
+    bind(handler) {
+      const gen = ++current;
+      return (event) => { if (gen === current) handler(event); };
+    },
+    close() { current++; },
+  };
 }
