@@ -17,6 +17,7 @@ import { liveAvailability, startLive } from '../lib/live.js';
 import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations, mayInstallCapture } from '../bubbles.js';
 import { MODEL_ID } from '../embed.js';
 import * as store from '../store.js';
+import { createCoachPanel } from './coach.js';
 
 // The transcription fetch (providers.js) carries a 30 s AbortSignal.timeout, so a stalled
 // request settles on its own; this is the backstop that keeps "Terminar" from
@@ -96,6 +97,10 @@ export function renderMeeting(root, { settings, onEvent }) {
 
   const controls = document.createElement('div');
   controls.className = 'controls';
+  const replyBtn = document.createElement('button');
+  replyBtn.type = 'button';
+  replyBtn.className = 'primary reply-btn';
+  replyBtn.textContent = 'Respuesta';
   const startBtn = document.createElement('button');
   startBtn.type = 'button';
   startBtn.className = 'primary start-meeting';
@@ -126,7 +131,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   newMeetingBtn.className = 'primary new-meeting';
   newMeetingBtn.textContent = 'Nueva reunión';
   newMeetingBtn.hidden = true;
-  controls.append(startBtn, resumeBtn, talkBtn, pauseBtn, stopBtn, newMeetingBtn);
+  controls.append(replyBtn, startBtn, resumeBtn, talkBtn, pauseBtn, stopBtn, newMeetingBtn);
   section.append(controls);
 
   root.append(section);
@@ -146,6 +151,15 @@ export function renderMeeting(root, { settings, onEvent }) {
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { toast.hidden = true; }, 1200);
   }
+
+  const coach = createCoachPanel({
+    settings,
+    getTurns: () => [...restored, ...(session ? session.transcript() : [])],
+    onToast: flashToast,
+    onBusy: (busy) => { replyBtn.disabled = busy; replyBtn.classList.toggle('busy', busy); },
+  });
+  section.insertBefore(coach.el, transcriptEl);
+  replyBtn.addEventListener('click', () => coach.ask());
 
   // --- Transcript rendering ---------------------------------------------------------
   const cache = new Map(); // t -> { text, es, esStale }
@@ -597,6 +611,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   return function cleanup() {
     destroyed = true;
     running = false;
+    coach.destroy();
     document.removeEventListener('visibilitychange', onVisibility);
     window.removeEventListener('pageshow', onVisibility);
     session?.close();

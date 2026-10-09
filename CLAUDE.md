@@ -74,6 +74,7 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 | `capture.js` `transcribe.js` | Microphone + worklet + Segmenter; the meeting's transcription call | 5 |
 | `providers.js` + `providers.test.js` | Every AI provider (Groq, OpenAI, Gemini, Claude, local): request shapes, keys, settings migration, the shared timeout/retry/redaction policy | P2-3 |
 | `store.js` `translate.js` `ui/*.js` | Device storage, translation, screens | 6 |
+| `ui/coach.js` `coachdata.js` + `coachdata.test.js` | The coach panel above the conversation («Frases» / «Notas» / «Contexto», and «Respuesta» taking the same panel) and its pure settings writes; profile and context fields shared with Ajustes | P2-5 |
 | `e2e/mock-groq.mjs` `e2e/run.mjs` `e2e/harness.mjs` `e2e/score.mjs` `e2e/smoke.mjs` | The whole app in Chrome with a fake mic and a stand-in for every provider's shapes, scored per cue; a UI smoke test | 6, 7, P2-3 |
 | `README.md` `CLAUDE.md` `docs/ORIGIN.md` | Documentation | 1, 8 |
 

@@ -386,7 +386,7 @@ function withTimeout(signal, ms) {
 
 function statusMessage({ stage, label, status, body, keys, lost }) {
   if (status === 401 || status === 403) return `${stage} Clave de ${label} no válida.`;
-  if (status === 429) return `${stage} ${label} está limitando las peticiones (429)${lost ? '; se perdió un fragmento' : ''}.`;
+  if (status === 429) return `${stage} ${label} está limitando las peticiones (429)${lost ? '; se perdió un fragmento.' : '. Espera un minuto y vuelve a intentarlo.'}`;
   return `${stage} ${label} ${status}: ${redact(body, keys).slice(0, 200)}`;
 }
 
@@ -430,7 +430,7 @@ function precheck(settings, id, job, stage) {
   const why = missing(settings, id, job);
   const label = providerById(id)?.label || id;
   if (why === 'provider') throw new Error(`${stage} Proveedor desconocido: ${id}.`);
-  if (why === 'key') throw new Error(`${stage} Falta la API key de ${label}.`);
+  if (why === 'key') throw new Error(`${stage} Falta la API key de ${label}${job === 'chat' ? ' (ábrela en Ajustes)' : ''}.`);
   if (why === 'base') throw new Error(`${stage} El servidor local debe estar en http://localhost o http://127.0.0.1.`);
   if (why === 'model') throw new Error(`${stage} Falta el modelo del servidor local.`);
 }

@@ -125,8 +125,16 @@ function shapeOf(req) {
 
 // The chat stand-in "translates" by tagging: it measures when text arrives, not
 // what it says.
+// The coach's suggested reply is recognised by its prompt and answered with the JSON
+// shape askReply parses; the bold key term lets a run check it renders as <b>.
+export const STAND_IN_ANSWER = 'I mostly work with **Angular** every day.';
 function chatReply(provider, userText) {
-  const text = `[es] ${userText}`;
+  const text = /Conversation so far:/.test(userText)
+    ? JSON.stringify({
+      answer: [{ en: STAND_IN_ANSWER, es: 'trabajo sobre todo con Angular' }],
+      ideas: [{ en: 'My day-to-day work is mostly **Angular** and RxJS.', es: 'mi trabajo diario' }, { en: 'I focus on Angular.', es: 'me centro en Angular' }],
+    })
+    : `[es] ${userText}`;
   if (provider === 'anthropic') return { content: [{ type: 'text', text }] };
   if (provider === 'gemini') return { candidates: [{ content: { parts: [{ text }] } }] };
   return { choices: [{ message: { role: 'assistant', content: text } }] };
@@ -161,7 +169,7 @@ export async function startMockGroq({ manifest, delayMs = 900, wav = null }) {
           shape.kind = 'chat';
           const user = shape.provider === 'gemini' ? parts.map((p) => p.text || '').join('')
             : (json.messages || []).filter((m) => m.role === 'user').map((m) => m.content).join('\n');
-          chats.push({ n: chats.length + 1, at: Date.now(), provider: shape.provider, auth: shape.auth, model: json.model ?? req.url.split('/').pop().split(':')[0], chars: user.length });
+          chats.push({ n: chats.length + 1, at: Date.now(), provider: shape.provider, auth: shape.auth, model: json.model ?? req.url.split('/').pop().split(':')[0], chars: user.length, user });
           await sleep(Math.round(delayMs / 3));
           res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' });
           res.end(JSON.stringify(chatReply(shape.provider, user)));

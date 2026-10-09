@@ -11,6 +11,9 @@
 // print ends the meeting first (confirmed) before either touches the print.
 
 import * as store from '../store.js';
+import { profileFields } from './coach.js';
+import { CATALOGUE } from '../lib/phrasebook.js';
+import { categoryActive, setCategoryActive } from '../coachdata.js';
 import { providersFor, providerById, routing, isConfigured, isLocalBase } from '../providers.js';
 
 function field(labelText, input) {
@@ -175,6 +178,26 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
   translateLabel.className = 'checkbox';
   translateLabel.append(translateInput, document.createTextNode('Traducir al español'));
   section.append(translateLabel);
+
+  // --- Coach: profile, today's context, phrases ---------------------------------
+  section.append(profileFields(settings));
+
+  const phrasesFieldset = document.createElement('fieldset');
+  phrasesFieldset.className = 'field';
+  const phrasesLegend = document.createElement('legend');
+  phrasesLegend.textContent = 'Frases rápidas en la reunión';
+  phrasesFieldset.append(phrasesLegend);
+  for (const { cat } of CATALOGUE) {
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = categoryActive(settings, cat);
+    input.addEventListener('change', () => patch(setCategoryActive(settings, cat, input.checked)));
+    const label = document.createElement('label');
+    label.className = 'checkbox';
+    label.append(input, document.createTextNode(cat));
+    phrasesFieldset.append(label);
+  }
+  section.append(phrasesFieldset);
 
   // --- Navigation ---------------------------------------------------------
   let continueBtn = null;

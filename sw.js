@@ -9,7 +9,7 @@
 // VENDOR_CACHE. Provider responses must never be cached (they carry the meeting's
 // transcript): the fetch handler writes only the exact SHELL_FILES URLs and
 // same-origin GETs under vendor/; every other request is left to the network.
-const CACHE_NAME = 'ec-shell-v4';
+const CACHE_NAME = 'ec-shell-v5';
 const VENDOR_CACHE = 'ec-vendor-v1';
 const SHELL_FILES = [
   './',
@@ -28,11 +28,15 @@ const SHELL_FILES = [
   'enroll-text.js',
   'transcribe.js',
   'providers.js',
+  'coachdata.js',
   'recorder-worklet.js',
   'ui/consent.js',
   'ui/settings.js',
   'ui/enroll.js',
   'ui/meeting.js',
+  'ui/coach.js',
+  'lib/coach.js',
+  'lib/phrasebook.js',
   'lib/live.js',
   'lib/segmenter.js',
   'manifest.webmanifest',

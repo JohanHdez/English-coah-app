@@ -371,7 +371,7 @@ test('a missing key fails before any request, naming the provider and the stage'
     const s = settingsFor('openai', 'anthropic');
     s.keys = { ...s.keys, openai: '', anthropic: '' };
     await assert.rejects(() => callTranscribe(s, samples, {}), /^Error: \[transcripción\] Falta la API key de OpenAI\.$/);
-    await assert.rejects(() => callChat(s, { system: 's', user: 'u' }), /^Error: \[coach\] Falta la API key de Anthropic Claude\.$/);
+    await assert.rejects(() => callChat(s, { system: 's', user: 'u' }), /^Error: \[coach\] Falta la API key de Anthropic Claude \(ábrela en Ajustes\)\.$/);
     await assert.rejects(() => callChat(s, { system: 's', user: 'u', stage: '[traducción]' }), /^Error: \[traducción\]/);
     assert.equal(calls.length, 0);
   } finally {
@@ -431,6 +431,22 @@ test('401 and 429 read as plain Spanish, naming the provider', async () => {
   } finally {
     stub.restore();
   }
+});
+
+test('a coach rate limit tells the learner to wait; a missing chat key points at Ajustes', async () => {
+  const stub = stubFetch(() => failing(429, ''));
+  try {
+    await assert.rejects(
+      () => callChat(settingsFor('groq'), { system: 's', user: 'u', sleep: noWait }),
+      /^Error: \[coach\] Groq está limitando las peticiones \(429\)\. Espera un minuto y vuelve a intentarlo\.$/,
+    );
+  } finally {
+    stub.restore();
+  }
+  await assert.rejects(
+    () => callChat(settingsFor('groq', 'groq', { keys: {} }), { system: 's', user: 'u' }),
+    /^Error: \[coach\] Falta la API key de Groq \(ábrela en Ajustes\)\.$/,
+  );
 });
 
 test('the Phase 1 retry policy covers chat and every provider', async () => {

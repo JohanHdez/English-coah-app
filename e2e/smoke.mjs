@@ -10,7 +10,10 @@
 // on a real tap of «Empezar reunión» (no autoplay flag), and a capture that dies
 // while the page is away (simulated: the tracks are stopped, then the page is
 // told it is visible again) must be reported and resumed into the same meeting
-// with «Reanudar». Nothing under e2e/
+// with «Reanudar». The coach panel is exercised mid-meeting at 360 px: a phrase
+// copied to the clipboard, a note added, the profile and context typed, «Respuesta»
+// answered by the stand-in and rendered with its key term in <b>, and the friendly
+// error for a missing key. Nothing under e2e/
 // ships in the release zip (see tools/check.mjs's EXCLUDED_PATHS / the release
 // skill), so this stays a manual/CI check, never part of the app bundle.
 //
@@ -213,6 +216,109 @@ async function main() {
     if (!stillRunning) throw new Error('[smoke] the meeting no longer looks like it is running after the overlay closed');
     console.log('meeting: the session is still running after the round trip through Ajustes');
 
+
+    // Phase 2, task 5: the coach panel at a phone's width, in the middle of the
+    // running meeting.
+    await chrome.send('Emulation.setDeviceMetricsOverride', { width: 360, height: 740, deviceScaleFactor: 1, mobile: false }, session);
+    await chrome.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'], origin: base });
+    const readClipboard = () => chrome.evaluate(session, 'navigator.clipboard.readText()');
+    const size = (selector) => chrome.evaluate(session, `(() => { const r = document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect(); return r ? { w: r.width, h: r.height } : null; })()`);
+
+    const replySize = await size('.meeting .reply-btn');
+    if (!replySize || replySize.h < 44) throw new Error(`[smoke] «Respuesta» is not a big tap target: ${JSON.stringify(replySize)}`);
+    const convoBefore = await size('.meeting .transcript');
+
+    await tap(chrome, session, '.coach-tab[data-tab=phrases]');
+    await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-body .chip') != null"), { label: 'the phrase chips' });
+    const chipSize = await size('.coach-body .chip');
+    const panelH = (await size('.coach-panel')).h;
+    if (chipSize.h < 44) throw new Error(`[smoke] a phrase chip is under 44 px: ${JSON.stringify(chipSize)}`);
+    if (panelH > 740 / 2 + 1) throw new Error(`[smoke] the coach panel is taller than half the screen: ${panelH}`);
+    const chipText = await chrome.evaluate(session, "document.querySelector('.coach-body .chip b').textContent");
+    await tap(chrome, session, '.coach-body .chip');
+    await waitFor(() => chrome.evaluate(session, "document.querySelector('.meeting .toast')?.hidden === false && document.querySelector('.meeting .toast').textContent === 'Copiado'"), { label: 'the «Copiado» toast' });
+    const copied = await readClipboard();
+    if (copied !== chipText) throw new Error(`[smoke] the chip did not reach the clipboard: "${copied}" vs "${chipText}"`);
+    const overflow = await chrome.evaluate(session, 'document.documentElement.scrollWidth > document.documentElement.clientWidth');
+    if (overflow) throw new Error('[smoke] the page scrolls sideways at 360 px');
+    console.log(`coach: chip «${chipText}» copied to the clipboard; chip ${Math.round(chipSize.h)} px tall, panel ${Math.round(panelH)} px of 740, no sideways scroll at 360 px`);
+
+    await tap(chrome, session, '.coach-tab[data-tab=notes]');
+    await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-body .notes') != null"), { label: 'the notes tab' });
+    await chrome.evaluate(session, `(() => {
+      const f = document.querySelector('.coach-body .add-form');
+      const t = f.querySelector('input'); t.value = 'Angular'; t.dispatchEvent(new Event('input', { bubbles: true }));
+      const b = f.querySelector('textarea'); b.value = 'Signals replace zone.js change detection'; b.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await tap(chrome, session, '.coach-body .add-form button[type=submit]');
+    await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-body .note.open .note-text')?.textContent === 'Signals replace zone.js change detection'"), { label: 'the new note, open' });
+    const noteStored = await chrome.evaluate(session, "import('./store.js').then((m) => m.get('settings')).then((s) => (s.notes || []).map((n) => n.title))");
+    if (noteStored.join() !== 'Angular') throw new Error(`[smoke] the note was not stored: ${JSON.stringify(noteStored)}`);
+    const notesTab = await chrome.evaluate(session, "document.querySelector('.coach-tab[data-tab=notes]').textContent");
+    if (notesTab !== 'Notas 1') throw new Error(`[smoke] the Notas tab does not count the note: "${notesTab}"`);
+    console.log('coach: a note added mid-meeting is shown open, stored, and counted in the tab');
+
+    await tap(chrome, session, '.coach-tab[data-tab=context]');
+    await waitFor(() => chrome.evaluate(session, "document.querySelectorAll('.coach-body textarea').length === 2"), { label: 'the profile and context fields' });
+    await chrome.evaluate(session, `(() => {
+      const [p, c] = document.querySelectorAll('.coach-body textarea');
+      p.value = 'PROFILE-MARK frontend developer, five years of Angular'; p.dispatchEvent(new Event('input', { bubbles: true }));
+      c.value = 'CONTEXT-MARK technical interview about signals'; c.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await tap(chrome, session, '.coach-tab[data-tab=context]'); // collapses the panel
+    const convoAfter = await size('.meeting .transcript');
+    if (convoAfter.h < convoBefore.h - 1) throw new Error(`[smoke] the conversation shrank with the panel collapsed: ${convoBefore.h} -> ${convoAfter.h}`);
+
+    // «Respuesta»: the suggested answer takes the panel's place.
+    const chatsBefore = mock.chats.length;
+    const tReply = Date.now();
+    await tap(chrome, session, '.meeting .reply-btn');
+    const pending = await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-reply .reply-status')?.textContent || ''"), { timeoutMs: 5000, everyMs: 20, label: '«Pensando…»' });
+    if (pending !== 'Pensando…') throw new Error(`[smoke] expected «Pensando…», got "${pending}"`);
+    const busy = await chrome.evaluate(session, "document.querySelector('.meeting .reply-btn').disabled");
+    if (!busy) throw new Error('[smoke] «Respuesta» can be tapped again while one request is in flight');
+    await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-reply .reply-item.answer') != null"), { timeoutMs: 20000, everyMs: 20, label: 'the suggested answer' });
+    const replyMs = Date.now() - tReply;
+    const rendered = await chrome.evaluate(session, `(() => {
+      const a = document.querySelector('.coach-reply .reply-item.answer .reply-en');
+      return { text: a.textContent, bold: [...a.querySelectorAll('b')].map((b) => b.textContent), ideas: document.querySelectorAll('.coach-reply .reply-item:not(.answer)').length, stars: a.textContent.includes('**') };
+    })()`);
+    if (rendered.bold.join() !== 'Angular' || rendered.stars || rendered.ideas !== 2) throw new Error(`[smoke] the suggested answer rendered wrong: ${JSON.stringify(rendered)}`);
+    const asked = mock.chats.slice(chatsBefore).find((c) => /Conversation so far:/.test(c.user));
+    if (!asked || !asked.user.includes('PROFILE-MARK') || !asked.user.includes('CONTEXT-MARK')) throw new Error('[smoke] the request did not carry the profile and the context just typed');
+    await tap(chrome, session, '.coach-reply .reply-item.answer');
+    await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-reply .reply-item.answer.copied') != null"), { label: 'the answer copied' });
+    if ((await readClipboard()) !== 'I mostly work with Angular every day.') throw new Error('[smoke] the copied answer kept its ** markers or was not copied');
+    await tap(chrome, session, '.coach-reply .reply-close');
+    await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-reply').hidden && !document.querySelector('.coach-tabs').hidden"), { label: 'the panel back to its tabs' });
+    console.log(`coach: «Respuesta» -> «Pensando…» -> answer with "Angular" in <b>, 2 ideas, copied without markers; ${replyMs} ms from tap to render against the stand-in (its chat delay is ${Math.round(300 / 3)} ms); profile and context reached the request`);
+
+    // Translation, per bubble, through the same stand-in and the app's own translate.js.
+    const times = await chrome.evaluate(session, `(async () => {
+      // A fresh copy of translate.js with the browser's own Translator hidden, so the
+      // chat provider's stand-in is what answers.
+      const { loadSettings } = await import('./store.js');
+      const settings = await loadSettings();
+      const saved = window.Translator;
+      delete window.Translator;
+      try {
+        const { toSpanish } = await import('./translate.js?chat-only');
+        const out = [];
+        for (let i = 0; i < 9; i++) {
+          const t0 = performance.now();
+          const es = await toSpanish('That is the best part of the conversation number ' + i, settings);
+          out.push({ ms: Math.round(performance.now() - t0), ok: es.startsWith('[es]') });
+        }
+        return out;
+      } finally {
+        if (saved) window.Translator = saved;
+      }
+    })()`);
+    if (times.some((x) => !x.ok)) throw new Error(`[smoke] a translation did not come back through the stand-in: ${JSON.stringify(times)}`);
+    const sorted = times.map((x) => x.ms).sort((a, b) => a - b);
+    console.log(`translation: 9 bubbles through the stand-in, p50 ${sorted[4]} ms, max ${sorted[8]} ms (stand-in chat delay ${Math.round(300 / 3)} ms; a real model's time is not measured here)`);
+    await chrome.send('Emulation.clearDeviceMetricsOverride', {}, session);
+
     // Final review, finding 2: capture that dies in the background is reported on
     // return, and «Reanudar» restarts it into the same meeting.
     const beforeLoss = await bubbleCount(chrome, session);
@@ -266,6 +372,26 @@ async function main() {
       throw new Error(`[smoke] lastTranscript was not marked finished after "Terminar": ${JSON.stringify(savedAfterStop)}`);
     }
     console.log(`meeting: lastTranscript marked finished (finishedAt ${new Date(savedAfterStop.finishedAt).toISOString()}, ${savedAfterStop.entries.length} entries)`);
+
+
+    // The coach's errors are the friendly Spanish ones, staged [coach]: a missing key
+    // points at Ajustes.
+    const setGroqKey = async (value) => {
+      await chrome.evaluate(session, "document.getElementById('settingsBtn').click();");
+      await waitFor(() => chrome.evaluate(session, "document.querySelector('#overlay .screen.settings input[type=password]') != null"), { label: 'the settings overlay' });
+      await chrome.evaluate(session, `(() => {
+        const i = document.querySelector('#overlay .settings input[type=password]');
+        i.value = ${JSON.stringify(value)}; i.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await chrome.evaluate(session, "[...document.querySelectorAll('#overlay button')].find((b) => b.textContent === 'Volver').click();");
+    };
+    await setGroqKey('');
+    await tap(chrome, session, '.meeting .reply-btn');
+    const keyError = await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-reply .reply-status.error')?.textContent || ''"), { timeoutMs: 10000, label: 'the missing-key error' });
+    if (keyError !== '[coach] Falta la API key de Groq (ábrela en Ajustes).') throw new Error(`[smoke] unexpected coach error: "${keyError}"`);
+    await tap(chrome, session, '.coach-reply .reply-close');
+    await setGroqKey(FAKE_KEY);
+    console.log(`coach: with no key, «Respuesta» says "${keyError}"`);
 
     await tap(chrome, session, '.meeting .new-meeting');
     await waitFor(
