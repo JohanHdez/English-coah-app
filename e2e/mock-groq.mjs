@@ -138,6 +138,10 @@ export const STAND_IN_REPORT = [
   '- Practica **phrasal verbs**',
   '1. Primero',
   '2. Segundo',
+  '| Dijiste | Correcto | Por qué |',
+  '|---|---|---|',
+  '| I am agree | I agree | **verbo** |',
+  '| <b>x</b> | y | z |',
 ].join('\n');
 function chatReply(provider, userText) {
   const text = /Transcripción (completa|\(sólo)/.test(userText) ? STAND_IN_REPORT

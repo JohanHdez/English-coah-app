@@ -664,3 +664,28 @@ textarea {
 .report-body ol {
   padding-left: 1.3rem;
 }
+
+.report-body .table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0.4rem 0;
+}
+
+.report-body table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-size: 0.9rem;
+}
+
+.report-body th,
+.report-body td {
+  border: 1px solid var(--border);
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.report-body th {
+  color: var(--muted);
+  white-space: nowrap;
+}

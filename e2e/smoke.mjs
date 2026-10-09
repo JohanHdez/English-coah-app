@@ -417,11 +417,16 @@ async function main() {
         strong: [...b.querySelectorAll('strong')].map((n) => n.textContent),
         scripts: b.querySelectorAll('script').length, imgs: b.querySelectorAll('img').length,
         pwned: window.__pwned === 1, text: b.textContent,
+        table: { th: b.querySelectorAll('table thead th').length, rows: b.querySelectorAll('table tbody tr').length, boldCell: b.querySelector('td strong')?.textContent, bTags: b.querySelectorAll('td b').length },
+        pageScroll: document.documentElement.scrollWidth > document.documentElement.clientWidth,
       };
     })()`);
     if (reportDom.h2 !== 1 || reportDom.h3 !== 1 || reportDom.ul !== 2 || reportDom.ol !== 2
       || !reportDom.strong.includes('Angular') || !reportDom.strong.includes('phrasal verbs')) {
       throw new Error(`[smoke] the report did not render as elements: ${JSON.stringify(reportDom)}`);
+    }
+    if (reportDom.table.th !== 3 || reportDom.table.rows !== 2 || reportDom.table.boldCell !== 'verbo' || reportDom.table.bTags || reportDom.pageScroll) {
+      throw new Error(`[smoke] the report table did not render as a <table>: ${JSON.stringify(reportDom.table)} pageScroll=${reportDom.pageScroll}`);
     }
     if (reportDom.scripts || reportDom.imgs || reportDom.pwned
       || !reportDom.text.includes('<script>window.__pwned = 1</script>') || !reportDom.text.includes('<img src=x onerror=')) {
@@ -443,7 +448,7 @@ async function main() {
     await tap(chrome, session, '.report .report-copy');
     const copyMsg = await waitFor(() => chrome.evaluate(session, "document.querySelector('.meeting .toast:not([hidden])')?.textContent || ''"), { timeoutMs: 3000, everyMs: 20, label: 'the clipboard message' });
     if (!/^No se pudo copiar/.test(copyMsg)) throw new Error(`[smoke] unexpected clipboard message: "${copyMsg}"`);
-    console.log(`report: ${reportMs} ms from tap to render; ${reportDom.h2} h2, ${reportDom.h3} h3, ${reportDom.ul} bullets, ${reportDom.ol} numbered, bold ${JSON.stringify(reportDom.strong)}; <script> and <img onerror> stayed text; stored with the transcript; Blob built locally; no clipboard -> "${copyMsg}"`);
+    console.log(`report: ${reportMs} ms from tap to render; ${reportDom.h2} h2, ${reportDom.h3} h3, ${reportDom.ul} bullets, ${reportDom.ol} numbered, bold ${JSON.stringify(reportDom.strong)}; a 3-column <table> with a bold cell and <b> as text, no page scroll; <script> and <img onerror> stayed text; stored with the transcript; Blob built locally; no clipboard -> "${copyMsg}"`);
 
     // A «Respuesta» still waiting when «Terminar» and «Nueva reunión» run must not paint
     // into the next meeting: the stand-in is slowed so the request outlives both taps.

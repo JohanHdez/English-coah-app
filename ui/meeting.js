@@ -491,6 +491,8 @@ export function renderMeeting(root, { settings, onEvent }) {
   }
 
   startBtn.addEventListener('click', () => {
+    report.reset();
+    reportMd = null;
     const audioContext = createAudioContext();
     startBtn.hidden = true;
     if (session) startRecording(audioContext);
@@ -548,7 +550,13 @@ export function renderMeeting(root, { settings, onEvent }) {
     const entries = Array.isArray(saved) ? saved : saved?.entries;
     const finished = Array.isArray(saved) ? false : !!saved?.finishedAt;
     if (!finished && Array.isArray(entries) && entries.length) showResumeChooser(entries);
-    else startBtn.hidden = false;
+    else {
+      startBtn.hidden = false;
+      if (finished && typeof saved.report === 'string' && saved.report) {
+        reportMd = saved.report;
+        report.show(saved.report);
+      }
+    }
   }
   boot();
 
