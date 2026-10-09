@@ -6,10 +6,10 @@
 // embed worker depends on the browser's HTTP cache, which a static host's short
 // max-age makes revalidate, and an evicted WASM downloads again on mobile data.
 // The files never change under one name; replacing vendor/ means bumping
-// VENDOR_CACHE. Groq responses must never be cached (they carry the meeting's
-// audio transcript): the fetch handler writes only the exact SHELL_FILES URLs and
+// VENDOR_CACHE. Provider responses must never be cached (they carry the meeting's
+// transcript): the fetch handler writes only the exact SHELL_FILES URLs and
 // same-origin GETs under vendor/; every other request is left to the network.
-const CACHE_NAME = 'ec-shell-v3';
+const CACHE_NAME = 'ec-shell-v4';
 const VENDOR_CACHE = 'ec-vendor-v1';
 const SHELL_FILES = [
   './',
@@ -27,6 +27,7 @@ const SHELL_FILES = [
   'embed-worker.js',
   'enroll-text.js',
   'transcribe.js',
+  'providers.js',
   'recorder-worklet.js',
   'ui/consent.js',
   'ui/settings.js',

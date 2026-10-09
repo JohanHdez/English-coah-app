@@ -6,6 +6,12 @@
 // exception, and it is the app's own dependency.
 //
 // Usage: node e2e/run.mjs <learner> <other> [--condition=room|clean] [--delay=900] [--lang=en|multi] [--throttle=4]
+//                         [--transcribe=groq|openai|gemini] [--chat=groq|openai|gemini|anthropic]
+//
+// --transcribe picks the provider whose request shape carries the audio (default
+// groq); every one is answered by the same stand-in. --chat turns translation on
+// through that provider's shape, with the browser's own Translator hidden; without
+// it translation stays off, as in the Phase 1 runs.
 //
 // --throttle=N stands in for a phone's CPU; it is not a phone measurement. The page
 // is slowed N× with Emulation.setCPUThrottlingRate, which DevTools refuses for
@@ -21,7 +27,7 @@ const args = process.argv.slice(2);
 const positional = args.filter((a) => !a.startsWith('--'));
 const opt = (name, fallback) => args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
 if (positional.length < 2) {
-  console.error('usage: node e2e/run.mjs <learner> <other> [--condition=room|clean] [--delay=900] [--lang=en|multi] [--throttle=4]');
+  console.error('usage: node e2e/run.mjs <learner> <other> [--condition=room|clean] [--delay=900] [--lang=en|multi] [--throttle=4] [--transcribe=<id>] [--chat=<id>]');
   process.exit(2);
 }
 const [learner, other] = positional;
@@ -29,12 +35,18 @@ const condition = opt('condition', 'room');
 const delayMs = Number(opt('delay', '900'));
 const lang = opt('lang', 'en');
 const cpuThrottle = Number(opt('throttle', '0'));
+const transcribe = opt('transcribe', 'groq');
+const chat = opt('chat', null);
+if (!['groq', 'openai', 'gemini'].includes(transcribe) || (chat && !['groq', 'openai', 'gemini', 'anthropic'].includes(chat))) {
+  console.error('[e2e] --transcribe takes groq|openai|gemini; --chat also anthropic (Claude has no audio input)');
+  process.exit(2);
+}
 
 const pad = (s, n) => String(s).padEnd(n);
 const fmt = (v, d = 1) => (v === null || v === undefined ? '-' : v.toFixed(d));
 const pct = (v) => (v === null ? '-' : `${(v * 100).toFixed(1)} %`);
 
-const run = await runConversation({ learner, other, condition, delayMs, lang, cpuThrottle });
+const run = await runConversation({ learner, other, condition, delayMs, lang, cpuThrottle, transcribe, chat });
 const { perCue, totals } = score(run);
 const cost = embedCost(run);
 
@@ -61,7 +73,7 @@ function embedCost({ events, embeds }) {
   };
 }
 
-console.log(`\n${learner} (learner) with ${other} · ${condition} · stand-in delay ${delayMs} ms${cpuThrottle ? ` · CPU throttled ${cpuThrottle}×` : ''} · fixtures in ${FIXTURES}`);
+console.log(`\n${learner} (learner) with ${other} · ${condition} · stand-in delay ${delayMs} ms${cpuThrottle ? ` · CPU throttled ${cpuThrottle}×` : ''} · transcription ${transcribe} · chat ${chat || 'off'} · fixtures in ${FIXTURES}`);
 console.log(`\n${pad('cue', 4)}${pad('truth', 7)}${pad('bubble', 8)}${pad('ok', 5)}${pad('lat s', 8)}${pad('words', 8)}text`);
 for (const c of perCue) {
   const label = c.bubble ?? 'none';
@@ -79,6 +91,7 @@ console.log(`  stand-in requests         ${totals.requests} (${totals.skippedReq
 console.log(`  stand-in matching         audio alignment placed ${totals.alignedRequests}/${totals.requests}; arrival time alone would have picked another cue for ${totals.arrivalDisagrees}`);
 console.log(`  embedding                 ${fmt(cost.msPerSpeechS, 0)} ms per s of speech (${cost.segments} segments, ${fmt(cost.speechS)} s); ${cost.embeds} embeds p50 ${fmt(cost.embedP50, 0)} ms · p90 ${fmt(cost.embedP90, 0)} ms`);
 console.log(`  window scan               skipped for ${cost.skipped}/${cost.long} segments of 3 s or more (largest backlog ${fmt(cost.maxBacklogS)} s)`);
+console.log(`  provider shapes           transcription ${run.requests.length} × ${[...new Set(run.requests.map((r) => r.provider))].join(', ') || '-'} (key in its own header: ${run.requests.filter((r) => r.auth).length}/${run.requests.length}); chat ${run.chats.length} × ${[...new Set(run.chats.map((r) => r.provider))].join(', ') || '-'} (key in its own header: ${run.chats.filter((r) => r.auth).length}/${run.chats.length})`);
 console.log(`  error events              ${totals.errorEvents}`);
 console.log(`  console errors            ${run.errors.length}`);
 for (const e of run.errors.slice(0, 5)) console.log(`    ${e}`);
@@ -87,6 +100,6 @@ if (run.errors.length || totals.errorEvents) process.exitCode = 1;
 
 const dir = join(FIXTURES, '..', 'results');
 mkdirSync(dir, { recursive: true });
-const file = join(dir, `run-${new Date().toISOString().replace(/[:.]/g, '-')}-${slug(learner)}-${slug(other)}-${condition}${cpuThrottle ? `-cpu${cpuThrottle}x` : ''}.json`);
-writeFileSync(file, JSON.stringify({ args: { learner, other, condition, delayMs, lang, cpuThrottle }, totals, cost, perCue, run }, null, 1));
+const file = join(dir, `run-${new Date().toISOString().replace(/[:.]/g, '-')}-${slug(learner)}-${slug(other)}-${condition}${cpuThrottle ? `-cpu${cpuThrottle}x` : ''}-${transcribe}${chat ? `-${chat}` : ''}.json`);
+writeFileSync(file, JSON.stringify({ args: { learner, other, condition, delayMs, lang, cpuThrottle, transcribe, chat }, totals, cost, perCue, run }, null, 1));
 console.log(`\nsaved ${file}`);

@@ -1,16 +1,24 @@
 // First-run privacy notice. Shown once: app.js routes here only while
-// store.get('consent') is falsy, and accepting is the only way out.
+// store.get('consent') is falsy, and accepting is the only way out. Who receives
+// the audio and who the text is read from the current settings (Groq for both
+// on a first run); settings.js shows the same lines as the choice changes.
 
 import * as store from '../store.js';
+import { routing, migrateSettings } from '../providers.js';
 
-const PARAGRAPHS = [
-  'Esta app escucha a través del micrófono de este dispositivo mientras dura la reunión.',
-  'Si usas Groq, el audio de la reunión se envía a Groq para transcribirse.',
-  'Tu huella de voz se queda en este dispositivo: nunca se envía a ningún servidor.',
-  'Grabar o transcribir una reunión puede requerir el consentimiento de las demás personas y puede estar prohibido por tu empresa — decides tú.',
-];
+function paragraphs(settings) {
+  const { audio, text } = routing(settings);
+  return [
+    'Esta app escucha a través del micrófono de este dispositivo mientras dura la reunión.',
+    audio,
+    text,
+    'Puedes elegir otro proveedor para cada tarea en Ajustes, con tu propia clave; allí verás siempre quién recibe el audio y quién el texto.',
+    'Tu huella de voz se queda en este dispositivo: nunca se envía a ningún servidor.',
+    'Grabar o transcribir una reunión puede requerir el consentimiento de las demás personas y puede estar prohibido por tu empresa — decides tú.',
+  ];
+}
 
-export function renderConsent(root, { onDone }) {
+export function renderConsent(root, { settings, onDone }) {
   root.textContent = '';
 
   const section = document.createElement('section');
@@ -20,7 +28,7 @@ export function renderConsent(root, { onDone }) {
   h1.textContent = 'Antes de empezar';
   section.append(h1);
 
-  for (const text of PARAGRAPHS) {
+  for (const text of paragraphs(migrateSettings(settings))) {
     const p = document.createElement('p');
     p.textContent = text;
     section.append(p);

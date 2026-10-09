@@ -190,6 +190,39 @@ select {
   color: var(--muted);
 }
 
+.hint {
+  margin: -0.25rem 0 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.hint.error {
+  color: var(--danger);
+}
+
+.routing {
+  font-size: 0.9rem;
+  background: #1b1f24;
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+}
+
+.routing p {
+  margin: 0.25rem 0;
+}
+
+.providers {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.field.provider {
+  gap: 0.6rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
 /* ---------------------------------------------------------------- enroll */
 
 .enroll-text {

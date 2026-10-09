@@ -72,6 +72,10 @@ async function main() {
       { label: 'the consent screen to render' },
     );
     if (h1 !== 'Antes de empezar') throw new Error(`[smoke] expected the consent screen, got "${h1}"`);
+    const consentText = await chrome.evaluate(session, "document.querySelector('.screen.consent')?.textContent || ''");
+    if (!/audio de la reunión se envía a Groq/.test(consentText) || !/texto de la conversación se envía a Groq/.test(consentText)) {
+      throw new Error(`[smoke] the consent screen does not say who receives the audio and the text: ${consentText}`);
+    }
     await chrome.evaluate(session, `
       [...document.querySelectorAll('button')].find((b) => b.textContent === 'Entendido').click();
     `);
@@ -98,8 +102,19 @@ async function main() {
       });
     `);
     const stored = await chrome.evaluate(session, "import('./store.js').then((m) => m.get('settings'))");
-    if (stored?.groqKey !== FAKE_KEY) throw new Error(`[smoke] settings.groqKey did not round-trip: ${JSON.stringify(stored)}`);
-    if (stored?.groqBase !== mock.url) throw new Error(`[smoke] settings.groqBase did not round-trip: ${JSON.stringify(stored)}`);
+    if (stored?.keys?.groq !== FAKE_KEY) throw new Error(`[smoke] settings.keys.groq did not round-trip: ${JSON.stringify({ ...stored, keys: Object.keys(stored?.keys || {}) })}`);
+    if (stored?.groqBase !== mock.url) throw new Error(`[smoke] settings.groqBase did not round-trip`);
+    const pickers = await chrome.evaluate(session, `(() => {
+      const [audio, text] = [...document.querySelectorAll('.settings select')].slice(0, 2);
+      return {
+        audio: [...audio.options].map((o) => o.value),
+        text: [...text.options].map((o) => o.value),
+        note: [...document.querySelectorAll('.settings .hint')].some((p) => p.textContent === 'Claude no recibe audio: úsalo para la traducción y el coach.'),
+        routing: document.querySelector('.settings .routing')?.textContent || '',
+      };
+    })()`);
+    if (pickers.audio.includes('anthropic') || !pickers.text.includes('anthropic') || !pickers.note) throw new Error(`[smoke] the provider pickers are wrong: ${JSON.stringify(pickers)}`);
+    if (!/audio de la reunión se envía a Groq/.test(pickers.routing)) throw new Error(`[smoke] settings do not say who receives the audio: ${pickers.routing}`);
     console.log(`settings: fake Groq key saved; groqBase pointed at the local mock (${mock.url})`);
     await chrome.evaluate(session, `
       [...document.querySelectorAll('button')].find((b) => b.textContent === 'Continuar').click();

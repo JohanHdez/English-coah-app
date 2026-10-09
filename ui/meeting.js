@@ -4,21 +4,21 @@
 // AudioContext created during a user gesture. The screen stays mounted for the
 // whole meeting: app.js overlays settings on top of it
 // instead of tearing it down (see app.js), so `settings` here is the very same
-// object the overlay edits, and a key/language/translation change reaches the
-// next Groq call with no restart. Only app.js's cleanup() (the two print-
+// object the overlay edits, and a provider/key/language/translation change
+// reaches the next call with no restart. Only app.js's cleanup() (the two print-
 // dependent settings actions, or real navigation away) fully tears this down.
 
 import { createSession } from '../session.js';
 import { createSpeakers } from '../speaker.js';
 import { startCapture, createAudioContext } from '../capture.js';
-import { transcribeGroq } from '../transcribe.js';
+import { transcribe } from '../transcribe.js';
 import { toSpanish } from '../translate.js';
 import { liveAvailability, startLive } from '../lib/live.js';
 import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations, mayInstallCapture } from '../bubbles.js';
 import { MODEL_ID } from '../embed.js';
 import * as store from '../store.js';
 
-// transcribeGroq's own fetch carries a 30 s AbortSignal.timeout, so a stalled
+// The transcription fetch (providers.js) carries a 30 s AbortSignal.timeout, so a stalled
 // request settles on its own; this is the backstop that keeps "Terminar" from
 // hanging if session.drain() is waiting on something that does not. When it
 // expires the session is closed: no meeting audio is uploaded after «Terminar».
@@ -212,7 +212,7 @@ export function renderMeeting(root, { settings, onEvent }) {
           const current = cache.get(entry.t);
           return !destroyed && current && current.text === entry.text && !current.es;
         };
-        translateQueue(() => (isCurrent() ? toSpanish(entry.text, { key: settings.groqKey, base: settings.groqBase }) : '')).then((txt) => {
+        translateQueue(() => (isCurrent() ? toSpanish(entry.text, settings) : '')).then((txt) => {
           if (!txt || !isCurrent()) return;
           const current = cache.get(entry.t);
           current.es = txt;
@@ -442,7 +442,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     const speakers = createSpeakers(Float32Array.from(print.vector));
     session = createSession({
       embed,
-      transcribe: (samples, signal) => transcribeGroq(samples, { key: settings.groqKey, base: settings.groqBase, lang: settings.lang, signal }),
+      transcribe: (samples, signal) => transcribe(samples, settings, { signal }),
       speakers,
       onEvent: gate.bind(handleEvent),
     });
@@ -554,7 +554,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     const handle = captureHandle;
     captureHandle = null;
     if (handle) await handle.stop();
-    // Pending embeds and Groq calls (including the segment stop() just flushed)
+    // Pending embeds and transcription calls (including the segment stop() just flushed)
     // are still in flight: wait for every bubble they produce before the worker
     // that embeds them is freed and the screen calls itself finished — bounded,
     // so a stall elsewhere cannot leave "Terminar" on "Terminando…" forever.

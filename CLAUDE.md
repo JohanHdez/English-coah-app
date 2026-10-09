@@ -29,9 +29,14 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 - Comments only for what the code cannot say — a browser-imposed behaviour, a measured number,
   a reason a later reader would otherwise have to rediscover. Never restate the code.
 - Never pass dynamic content to `innerHTML`; use `textContent` and `createElement`.
-- Secrets and biometrics: the Groq key and the voice print live in IndexedDB on the device and
-  nowhere else. Never log them, never put the key in a URL or query string, never send the
-  voice print anywhere — only the key goes to Groq's own host.
+- Secrets and biometrics: every provider key and the voice print live in IndexedDB on the device
+  and nowhere else. Never log them, never put a key in a URL or query string (Gemini's goes in
+  `x-goog-api-key`), never send the voice print anywhere — a key goes only to its own provider's
+  host. `providers.js` is the only place a request to a provider is built; a base override
+  (`groqBase`, `bases.<id>`, the harness's) and the local provider's `localBase` are honoured only
+  for `localhost` / `127.0.0.1`. The CSP `connect-src` in `index.html` lists exactly the
+  providers' hosts plus loopback and the model hosts — no `https:` wildcard; `providers.test.js`
+  checks it. Claude has no audio input: it is offered for chat only.
 - The service worker (`sw.js`) never caches audio, POST requests, or cross-origin responses. It
   precaches the app shell, and keeps same-origin `vendor/` files cache-first in their own
   versioned cache (`ec-vendor-v1`, filled on first use — bump it when `vendor/` is replaced);
@@ -44,7 +49,7 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
   `element.click()` from a script carries no user activation and ignores what covers the
   element — it hid a closed overlay that covered the whole app until 2026-10-02.
 - User-visible errors are prefixed with the stage that produced them: `[micrófono]`, `[huella]`,
-  `[groq]`, `[traducción]`.
+  `[transcripción]`, `[traducción]`, `[coach]`; the provider is named in the message.
 - Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Implementers never dispatch subagents; review is the controller's job.
 
@@ -66,9 +71,10 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 | `embed.js` `embed-worker.js` | Speaker embeddings with WeSpeaker | 4 |
 | `e2e/cdp.mjs` `e2e/speakers.mjs` `e2e/speakers.html` | Measures speaker accuracy and mixed segments | 4 |
 | `session.js` + `session.test.js` | Segment → print → speaker → transcription → bubbles; pure orchestration with injected dependencies | 5 |
-| `capture.js` `transcribe.js` | Microphone + worklet + Segmenter; Groq call | 5 |
+| `capture.js` `transcribe.js` | Microphone + worklet + Segmenter; the meeting's transcription call | 5 |
+| `providers.js` + `providers.test.js` | Every AI provider (Groq, OpenAI, Gemini, Claude, local): request shapes, keys, settings migration, the shared timeout/retry/redaction policy | P2-3 |
 | `store.js` `translate.js` `ui/*.js` | Device storage, translation, screens | 6 |
-| `e2e/mock-groq.mjs` `e2e/run.mjs` `e2e/harness.mjs` `e2e/score.mjs` `e2e/smoke.mjs` | The whole app in Chrome with a fake mic and a Groq stand-in, scored per cue; a UI smoke test | 6, 7 |
+| `e2e/mock-groq.mjs` `e2e/run.mjs` `e2e/harness.mjs` `e2e/score.mjs` `e2e/smoke.mjs` | The whole app in Chrome with a fake mic and a stand-in for every provider's shapes, scored per cue; a UI smoke test | 6, 7, P2-3 |
 | `README.md` `CLAUDE.md` `docs/ORIGIN.md` | Documentation | 1, 8 |
 
 ## Runtime contexts
@@ -109,6 +115,7 @@ node e2e/smoke.mjs                           # consent → settings → enrollme
 node e2e/run.mjs Paulina Samantha --condition=room     # the whole app on one conversation, scored per cue
 node e2e/run.mjs Mónica Daniel --condition=room
 node e2e/run.mjs Paulina Mónica --condition=room       # options: --condition=clean, --delay=<stand-in ms>, --lang=multi
+node e2e/run.mjs Paulina Samantha --transcribe=gemini --chat=anthropic   # another provider's request shapes
 ```
 
 `e2e/speakers.mjs` builds any missing fixture, serves the repo in-process, opens
@@ -139,7 +146,11 @@ measurement.
 `e2e/.profile` against one loopback port (IndexedDB and the cached voice model are per origin): the
 first launch plays `enroll-<learner>-<condition>.wav` into the real enrollment screen, so the print
 comes from the app's own code; the second plays the conversation into the real meeting screen, with
-Groq replaced by `e2e/mock-groq.mjs` (settings carry a `groqBase`, no UI field) and any request — the page's or its workers' — to a host other than loopback and the model's exact hosts (`huggingface.co`, `us.aws.cdn.hf.co`) failing the run. The stand-in places each received segment on the fixture by sliding its
+every provider replaced by `e2e/mock-groq.mjs` (settings carry `groqBase` and `bases.<id>`
+loopback overrides, no UI field; `--transcribe=<groq|openai|gemini>` picks whose request shape
+carries the audio, `--chat=<id>` turns translation on through that provider with the browser's
+Translator hidden, and the run fails if a request reached the wrong shape or its key was not in
+that provider's own header) and any request — the page's or its workers' — to a host other than loopback and the model's exact hosts (`huggingface.co`, `us.aws.cdn.hf.co`) failing the run. The stand-in places each received segment on the fixture by sliding its
 loudness envelope along the fixture's, and answers with the share of each overlapped cue's words (at least one word from 0.3 s of overlap), so a segment holding both speakers yields mixed text; the arrival-time
 guess is logged beside it and the run prints how often the two disagree. It prints, per cue, the
 truth against the bubble's speaker, the latency from the cue's end to its last word appearing in a
@@ -183,4 +194,15 @@ pipeline's labels and timing, never Whisper's accuracy.
   (`MATCH_MIN`, `MARGIN`) are calibrated on synthetic voices only; a real-voice check must
   recalibrate them.
 - The late-straggler race after «Terminar» is covered by unit tests only.
-- Not measured: a real phone, a real voice, real Groq, the browser's own translator.
+- Not measured: a real phone, a real voice, any real provider API (Groq, OpenAI, Gemini, Claude,
+  a local server), the browser's own translator. The adapters follow the providers' documentation
+  as read on 2026-10-09 and the stand-in answers those shapes; neither proves a real endpoint
+  accepts them.
+- Gemini transcription reports no language (`lang: null`), so in a bilingual meeting
+  `lib/langid.js` decides from the text alone; Gemini 3.x Flash models think by default, which may
+  add latency per segment — not measured.
+- The default chat models (`openai/gpt-oss-120b` on Groq) are reasoning models; translation now
+  uses them instead of Phase 1's `llama-3.1-8b-instant`, and their latency is not measured.
+- `gpt-4o-mini-transcribe` (OpenAI's default) is announced for removal on 2027-02-26; its
+  replacement `gpt-transcribe` takes `languages` instead of `language` (the adapter sends neither
+  for it).

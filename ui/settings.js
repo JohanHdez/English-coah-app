@@ -1,15 +1,17 @@
-// Groq key, meeting language, translation toggle, and the three destructive
+// Which AI transcribes and which translates and coaches, each provider's key and
+// models, meeting language, translation toggle, and the three destructive
 // actions. Reached either as the forced step between consent and enrollment (no
-// Groq key yet — app.js routes here), from the header's settings button between
-// meetings, or — endMeeting present — as an overlay on top of a running meeting,
+// usable transcription provider yet — app.js routes here), from the header's
+// settings button between meetings, or — endMeeting present — as an overlay on top of a running meeting,
 // which is why every field saves itself as it changes rather than waiting on a
 // single submit: `settings` is the very object the live session reads from, so a
-// key, language or translation change here reaches its next Groq call with no
-// restart. The print a running meeting's speaker state depends on cannot change
+// provider, key, language or translation change here reaches its next call with
+// no restart. The print a running meeting's speaker state depends on cannot change
 // out from under it, so when endMeeting is given, re-enrolling or deleting the
 // print ends the meeting first (confirmed) before either touches the print.
 
 import * as store from '../store.js';
+import { providersFor, providerById, routing, isConfigured, isLocalBase } from '../providers.js';
 
 function field(labelText, input) {
   const label = document.createElement('label');
@@ -35,20 +37,112 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
     await store.set('settings', settings);
   }
 
-  // --- Groq key ---------------------------------------------------------
-  const keyInput = document.createElement('input');
-  keyInput.type = 'password';
-  keyInput.autocomplete = 'off';
-  keyInput.placeholder = 'Pega tu API key de Groq';
-  keyInput.value = settings.groqKey || '';
-  section.append(field('Clave de Groq', keyInput));
+  // --- Who does what ---------------------------------------------------------
+  const route = document.createElement('div');
+  route.className = 'routing';
+  const audioLine = document.createElement('p');
+  const textLine = document.createElement('p');
+  route.append(audioLine, textLine);
 
-  const link = document.createElement('a');
-  link.href = 'https://console.groq.com';
-  link.target = '_blank';
-  link.rel = 'noopener';
-  link.textContent = 'Consíguela gratis en console.groq.com';
-  section.append(link);
+  function picker(legendText, job, key) {
+    const select = document.createElement('select');
+    for (const p of providersFor(job)) {
+      const option = document.createElement('option');
+      option.value = p.id;
+      option.textContent = p.label;
+      select.append(option);
+    }
+    select.value = settings[key];
+    select.addEventListener('change', () => { patch({ [key]: select.value }); refresh(); });
+    return field(legendText, select);
+  }
+
+  section.append(picker('Transcripción', 'transcribe', 'transcribeProvider'));
+  const claudeNote = document.createElement('p');
+  claudeNote.className = 'hint';
+  claudeNote.textContent = 'Claude no recibe audio: úsalo para la traducción y el coach.';
+  section.append(claudeNote);
+  section.append(picker('Traducción y coach', 'chat', 'chatProvider'));
+  section.append(route);
+
+  // One block per chosen provider: its key, and a model field for each job it does.
+  const details = document.createElement('div');
+  details.className = 'providers';
+  section.append(details);
+
+  function patchNested(name, id, value) {
+    patch({ [name]: { ...settings[name], [id]: value } });
+  }
+
+  function providerBlock(p, jobs) {
+    const block = document.createElement('fieldset');
+    block.className = 'field provider';
+    const legend = document.createElement('legend');
+    legend.textContent = p.label;
+    block.append(legend);
+
+    if (p.id === 'local') {
+      const baseInput = document.createElement('input');
+      baseInput.type = 'url';
+      baseInput.autocomplete = 'off';
+      baseInput.placeholder = 'http://localhost:8000';
+      baseInput.value = settings.localBase || '';
+      const warn = document.createElement('p');
+      warn.className = 'hint';
+      warn.textContent = 'Solo se aceptan direcciones http://localhost o http://127.0.0.1: el audio no sale de este dispositivo.';
+      baseInput.addEventListener('input', () => {
+        const value = baseInput.value.trim();
+        warn.classList.toggle('error', value !== '' && !isLocalBase(value));
+        patch({ localBase: value });
+        updateContinue();
+      });
+      block.append(field('Dirección del servidor (compatible con OpenAI)', baseInput), warn);
+    }
+
+    const keyInput = document.createElement('input');
+    keyInput.type = 'password';
+    keyInput.autocomplete = 'off';
+    keyInput.placeholder = p.id === 'local' ? 'Opcional' : `Pega tu API key de ${p.label}`;
+    keyInput.value = settings.keys?.[p.id] || '';
+    keyInput.addEventListener('input', () => { patchNested('keys', p.id, keyInput.value.trim()); updateContinue(); });
+    block.append(field(p.id === 'local' ? 'Clave (opcional)' : `Clave de ${p.label}`, keyInput));
+
+    if (p.keyUrl) {
+      const link = document.createElement('a');
+      link.href = p.keyUrl;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = `Consíguela en ${new URL(p.keyUrl).hostname}`;
+      block.append(link);
+    }
+
+    for (const job of jobs) {
+      const modelInput = document.createElement('input');
+      modelInput.type = 'text';
+      modelInput.autocomplete = 'off';
+      modelInput.spellcheck = false;
+      modelInput.placeholder = p.models[job] || (job === 'transcribe' ? 'p. ej. whisper-1' : 'p. ej. llama3.2');
+      modelInput.value = settings.models?.[p.id]?.[job] || '';
+      modelInput.addEventListener('input', () => {
+        patchNested('models', p.id, { ...settings.models?.[p.id], [job]: modelInput.value.trim() });
+        updateContinue();
+      });
+      block.append(field(job === 'transcribe' ? 'Modelo de transcripción' : 'Modelo de traducción y coach', modelInput));
+    }
+    return block;
+  }
+
+  function refresh() {
+    const { audio, text } = routing(settings);
+    audioLine.textContent = audio;
+    textLine.textContent = text;
+    details.textContent = '';
+    const chosen = new Map();
+    chosen.set(settings.transcribeProvider, ['transcribe']);
+    chosen.set(settings.chatProvider, [...(chosen.get(settings.chatProvider) || []), 'chat']);
+    for (const [id, jobs] of chosen) details.append(providerBlock(providerById(id), jobs));
+    updateContinue();
+  }
 
   // --- Meeting language ---------------------------------------------------
   const langFieldset = document.createElement('fieldset');
@@ -82,11 +176,6 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
   translateLabel.append(translateInput, document.createTextNode('Traducir al español'));
   section.append(translateLabel);
 
-  keyInput.addEventListener('input', () => {
-    patch({ groqKey: keyInput.value.trim() });
-    if (continueBtn) continueBtn.disabled = !keyInput.value.trim();
-  });
-
   // --- Navigation ---------------------------------------------------------
   let continueBtn = null;
   if (forced) {
@@ -94,7 +183,6 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
     continueBtn.type = 'button';
     continueBtn.className = 'primary';
     continueBtn.textContent = 'Continuar';
-    continueBtn.disabled = !keyInput.value.trim();
     continueBtn.addEventListener('click', () => onBack());
     section.append(continueBtn);
   } else {
@@ -163,6 +251,11 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
   }
 
   section.append(danger);
+
+  function updateContinue() {
+    if (continueBtn) continueBtn.disabled = !isConfigured(settings);
+  }
+  refresh();
 
   const notice = document.createElement('p');
   notice.className = 'notice';

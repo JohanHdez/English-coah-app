@@ -1,5 +1,11 @@
-// A stand-in for Groq's transcription endpoint, so the API engine can be driven
-// without a key and without sending audio anywhere. It does not listen: it answers
+// A stand-in for every provider's endpoints, so the app can be driven without a
+// key and without sending audio anywhere: OpenAI-shaped transcription (Groq's
+// /openai/v1/… and OpenAI's /v1/…), Gemini's generateContent (audio inline as
+// base64, or text for chat), OpenAI-shaped chat completions and Anthropic's
+// /v1/messages. Each request records which provider shape it used and whether
+// the key arrived in that provider's own header and nowhere in the URL (`auth`);
+// chat requests go to `chats`, so `requests` stays the transcription log the score
+// reads. It does not listen: it answers
 // each request with the fixture sentence its audio most likely is, after a fixed
 // delay, so a run measures how the queue and the two lanes behave — not accuracy.
 //
@@ -31,7 +37,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, content-type',
+  'Access-Control-Allow-Headers': 'authorization, content-type, x-goog-api-key, x-api-key, anthropic-version, anthropic-dangerous-direct-browser-access',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
@@ -94,20 +100,78 @@ function fieldOf(text, name) {
   return m ? m[1] : null;
 }
 
+// Which provider's shape a request used, and whether its key came the way that
+// provider takes it: in its own header, never in the URL.
+function shapeOf(req) {
+  const url = req.url || '';
+  const h = req.headers;
+  const bearer = /^Bearer \S+/.test(h.authorization || '');
+  const inUrl = /[?&]key=/.test(url);
+  if (/\/openai\/v1\/audio\/transcriptions$/.test(url)) return { provider: 'groq', kind: 'transcribe', auth: bearer && !inUrl };
+  if (/\/v1\/audio\/transcriptions$/.test(url)) return { provider: 'openai', kind: 'transcribe', auth: bearer && !inUrl };
+  if (/\/openai\/v1\/chat\/completions$/.test(url)) return { provider: 'groq', kind: 'chat', auth: bearer && !inUrl };
+  if (/\/v1\/chat\/completions$/.test(url)) return { provider: 'openai', kind: 'chat', auth: bearer && !inUrl };
+  if (/^\/v1beta\/models\/[^/:]+:generateContent$/.test(url)) {
+    return { provider: 'gemini', kind: null, auth: !!h['x-goog-api-key'] && !h.authorization && !inUrl };
+  }
+  if (/\/v1\/messages$/.test(url)) {
+    return {
+      provider: 'anthropic', kind: 'chat',
+      auth: !!h['x-api-key'] && !h.authorization && !!h['anthropic-version'] && h['anthropic-dangerous-direct-browser-access'] === 'true',
+    };
+  }
+  return null;
+}
+
+// The chat stand-in "translates" by tagging: it measures when text arrives, not
+// what it says.
+function chatReply(provider, userText) {
+  const text = `[es] ${userText}`;
+  if (provider === 'anthropic') return { content: [{ type: 'text', text }] };
+  if (provider === 'gemini') return { candidates: [{ content: { parts: [{ text }] } }] };
+  return { choices: [{ message: { role: 'assistant', content: text } }] };
+}
+
 export async function startMockGroq({ manifest, delayMs = 900, wav = null }) {
   const requests = [];
+  const chats = [];
   let t0 = Date.now();
   const whole = wav ? envelope(wav, 44) : null;
 
   const server = createServer((req, res) => {
     if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
-    if (req.url === '/reset') { requests.length = 0; res.writeHead(200, CORS); res.end('ok'); return; }
-    if (!/\/audio\/transcriptions$/.test(req.url || '')) { res.writeHead(404, CORS); res.end(); return; }
+    if (req.url === '/reset') { requests.length = 0; chats.length = 0; res.writeHead(200, CORS); res.end('ok'); return; }
+    const shape = shapeOf(req);
+    if (!shape || req.method !== 'POST') { res.writeHead(404, CORS); res.end(); return; }
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', async () => {
-      const body = Buffer.concat(chunks);
-      const text = body.toString('latin1');
+      let body = Buffer.concat(chunks);
+      let language = null;
+      let format = null;
+      if (shape.provider === 'gemini' || shape.kind === 'chat') {
+        let json;
+        try { json = JSON.parse(body.toString('utf8')); } catch { res.writeHead(400, CORS); res.end('bad json'); return; }
+        const parts = shape.provider === 'gemini' ? json.contents?.flatMap((c) => c.parts || []) || [] : [];
+        const audio = parts.find((p) => p.inlineData || p.inline_data);
+        if (shape.provider === 'gemini' && audio) {
+          shape.kind = 'transcribe';
+          body = Buffer.from((audio.inlineData || audio.inline_data).data, 'base64');
+        } else {
+          shape.kind = 'chat';
+          const user = shape.provider === 'gemini' ? parts.map((p) => p.text || '').join('')
+            : (json.messages || []).filter((m) => m.role === 'user').map((m) => m.content).join('\n');
+          chats.push({ n: chats.length + 1, at: Date.now(), provider: shape.provider, auth: shape.auth, model: json.model ?? req.url.split('/').pop().split(':')[0], chars: user.length });
+          await sleep(Math.round(delayMs / 3));
+          res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(chatReply(shape.provider, user)));
+          return;
+        }
+      } else {
+        const text = body.toString('latin1');
+        language = fieldOf(text, 'language');
+        format = fieldOf(text, 'response_format');
+      }
       const seconds = wavSeconds(body);
       const arrived = (Date.now() - t0) / 1000;
       const overlapOf = (cue, start, end) => Math.min(end, cue.end) - Math.max(start, cue.start);
@@ -144,10 +208,8 @@ export async function startMockGroq({ manifest, delayMs = 900, wav = null }) {
       } else {
         if (arrivalCue) slices.push({ cue: manifest.cues.indexOf(arrivalCue), from: 0, to: arrivalCue.text.split(/\s+/).length });
       }
-      const language = fieldOf(text, 'language');
-      const format = fieldOf(text, 'response_format');
       const entry = {
-        n: requests.length + 1, at: Date.now(), seconds: Math.round(seconds * 10) / 10, language, format,
+        n: requests.length + 1, at: Date.now(), provider: shape.provider, auth: shape.auth, seconds: Math.round(seconds * 10) / 10, language, format,
         cue: slices.length ? keyOf(manifest.cues[slices[0].cue]) : null,
         slices,
         arrivalCue: keyOf(arrivalCue),
@@ -156,8 +218,14 @@ export async function startMockGroq({ manifest, delayMs = 900, wav = null }) {
       };
       requests.push(entry);
       await sleep(delayMs);
-      const out = { text: slices.length ? slices.map((x) => manifest.cues[x.cue].text.split(/\s+/).slice(x.from, x.to).join(' ')).join(' ') : `[mock turn ${entry.n}]` };
-      if (format === 'verbose_json' && slices.length) out.language = manifest.cues[slices[0].cue].lang === 'es' ? 'spanish' : 'english';
+      const said = slices.length ? slices.map((x) => manifest.cues[x.cue].text.split(/\s+/).slice(x.from, x.to).join(' ')).join(' ') : `[mock turn ${entry.n}]`;
+      const spoken = slices.length ? manifest.cues[slices[0].cue].lang || 'en' : null;
+      let out = { text: said };
+      if (shape.provider === 'gemini') out = { candidates: [{ content: { parts: [{ text: said }], role: 'model' } }] };
+      else if (format === 'verbose_json' && spoken) out.language = spoken === 'es' ? 'spanish' : 'english';
+      // https://developers.openai.com/api/docs/guides/speech-to-text: the json of the
+      // gpt-4o-*-transcribe models carries `languages` (ISO codes).
+      else if (shape.provider === 'openai' && spoken) out.languages = [spoken];
       res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' });
       res.end(JSON.stringify(out));
     });
@@ -168,7 +236,8 @@ export async function startMockGroq({ manifest, delayMs = 900, wav = null }) {
   return {
     url: `http://127.0.0.1:${port}`,
     requests,
-    reset: () => { requests.length = 0; },
+    chats,
+    reset: () => { requests.length = 0; chats.length = 0; },
     // The page's clock and this process's are the same wall clock.
     setT0: (ms) => { t0 = ms; },
     close: () => new Promise((r) => server.close(r)),

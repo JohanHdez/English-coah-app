@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { transcribeGroq, redact, parseRetryAfter, retryDelayMs, isRetryableStatus, RETRIES, MAX_WAIT_MS } from './transcribe.js';
+import { transcribe, redact, parseRetryAfter, retryDelayMs, isRetryableStatus, RETRIES, MAX_WAIT_MS } from './transcribe.js';
+import { migrateSettings } from './providers.js';
+
+// The Phase 1 tests, run through the provider-agnostic entry point with Groq chosen.
+const transcribeGroq = (samples, { key, base, lang, signal, sleep } = {}) =>
+  transcribe(samples, migrateSettings({ groqKey: key, groqBase: base, lang }), { signal, sleep });
 
 const noWait = async () => {};
 
@@ -78,13 +83,13 @@ test('a custom base is honoured and its trailing slash is tolerated', async () =
 
 test('a non-ok response raises a stage-prefixed, redacted, truncated error', async () => {
   const restore = stubGroq({}, () => ({
-    ok: false, status: 403, text: async () => 'bad key: gsk_abcdef0123456789',
+    ok: false, status: 400, text: async () => 'bad key: gsk_abcdef0123456789',
   }));
   try {
     await assert.rejects(
       () => transcribeGroq(samples, { key: 'gsk_test' }),
       (err) => {
-        assert.ok(err.message.startsWith('[groq] Groq 403:'));
+        assert.ok(err.message.startsWith('[transcripción] Groq 400:'));
         assert.ok(!err.message.includes('gsk_abcdef0123456789'), 'the key must never reach the message');
         assert.ok(err.message.includes('«API key oculta»'));
         return true;
@@ -101,7 +106,7 @@ test('a missing key fails before any network call', async () => {
   try {
     await assert.rejects(
       () => transcribeGroq(samples, {}),
-      /\[groq\] Falta la API key de Groq\./,
+      /\[transcripción\] Falta la API key de Groq\./,
     );
   } finally {
     globalThis.fetch = original;
@@ -111,27 +116,27 @@ test('a missing key fails before any network call', async () => {
 // Fix round 1, finding 9: these two paths forwarded the native error message
 // (`TypeError: Failed to fetch`, a `SyntaxError` from a malformed body) with no
 // stage prefix, so they reached the UI looking unlike every other Groq failure.
-test('a network failure is reported with the [groq] prefix', async () => {
+test('a network failure is reported with the [transcripción] prefix', async () => {
   const original = globalThis.fetch;
   globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
   try {
     await assert.rejects(
       () => transcribeGroq(samples, { key: 'gsk_test', sleep: noWait }),
-      (err) => { assert.ok(err.message.startsWith('[groq]'), err.message); return true; },
+      (err) => { assert.ok(err.message.startsWith('[transcripción]'), err.message); return true; },
     );
   } finally {
     globalThis.fetch = original;
   }
 });
 
-test('a malformed response body is reported with the [groq] prefix', async () => {
+test('a malformed response body is reported with the [transcripción] prefix', async () => {
   const restore = stubGroq({}, () => ({
     ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token'); },
   }));
   try {
     await assert.rejects(
       () => transcribeGroq(samples, { key: 'gsk_test' }),
-      (err) => { assert.ok(err.message.startsWith('[groq]'), err.message); return true; },
+      (err) => { assert.ok(err.message.startsWith('[transcripción]'), err.message); return true; },
     );
   } finally {
     restore();
@@ -149,12 +154,12 @@ test('the request carries an abort signal, so a stalled connection cannot hang f
   }
 });
 
-test('a timed-out request is reported with the [groq] prefix, like any other network failure', async () => {
+test('a timed-out request is reported with the [transcripción] prefix, like any other network failure', async () => {
   const restore = stubGroq({}, () => { throw new DOMException('The operation timed out.', 'TimeoutError'); });
   try {
     await assert.rejects(
       () => transcribeGroq(samples, { key: 'gsk_test', sleep: noWait }),
-      (err) => { assert.ok(err.message.startsWith('[groq]'), err.message); return true; },
+      (err) => { assert.ok(err.message.startsWith('[transcripción]'), err.message); return true; },
     );
   } finally {
     restore();
@@ -212,7 +217,7 @@ test('429, 5xx and network failures are retried, up to two retries', async () =>
 test('the third failure is reported, not retried again', async () => {
   const { calls, restore } = scripted([{ status: 500, body: 'down' }]);
   try {
-    await assert.rejects(() => transcribeGroq(samples, { key: 'gsk_test', sleep: noWait }), /^Error: \[groq\] Groq 500: down/);
+    await assert.rejects(() => transcribeGroq(samples, { key: 'gsk_test', sleep: noWait }), /^Error: \[transcripción\] Groq 500: down/);
     assert.equal(calls.length, 1 + RETRIES);
   } finally {
     restore();
@@ -223,7 +228,7 @@ test('a 4xx other than 429 is never retried', async () => {
   for (const status of [400, 401, 403, 404, 413]) {
     const { calls, restore } = scripted([{ status }]);
     try {
-      await assert.rejects(() => transcribeGroq(samples, { key: 'gsk_test', sleep: noWait }), /\[groq\]/);
+      await assert.rejects(() => transcribeGroq(samples, { key: 'gsk_test', sleep: noWait }), /\[transcripción\]/);
       assert.equal(calls.length, 1, `status ${status}`);
     } finally {
       restore();
@@ -234,13 +239,13 @@ test('a 4xx other than 429 is never retried', async () => {
 test('401 and 429 read as plain Spanish', async () => {
   let { restore } = scripted([{ status: 401, body: 'gsk_abcdef0123456789' }]);
   try {
-    await assert.rejects(() => transcribeGroq(samples, { key: 'gsk_test', sleep: noWait }), /^Error: \[groq\] Clave de Groq no válida\.$/);
+    await assert.rejects(() => transcribeGroq(samples, { key: 'gsk_test', sleep: noWait }), /^Error: \[transcripción\] Clave de Groq no válida\.$/);
   } finally {
     restore();
   }
   ({ restore } = scripted([{ status: 429 }]));
   try {
-    await assert.rejects(() => transcribeGroq(samples, { key: 'gsk_test', sleep: noWait }), /\[groq\] Groq está limitando las peticiones/);
+    await assert.rejects(() => transcribeGroq(samples, { key: 'gsk_test', sleep: noWait }), /\[transcripción\] Groq está limitando las peticiones/);
   } finally {
     restore();
   }

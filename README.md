@@ -26,7 +26,8 @@ node tools/check.mjs          # the gate: syntax, referenced files, unit tests
 ```
 
 `localhost` is a secure context, so the microphone works over plain HTTP there. On first run the
-app asks for consent, a Groq API key («Ajustes») and a voice enrollment, then shows «Empezar
+app asks for consent, an AI provider and its API key («Ajustes»: Groq by default) and a voice
+enrollment, then shows «Empezar
 reunión»: a meeting starts on that tap (browsers only run audio started by a gesture), or on
 «Continuar» when an unfinished conversation is waiting.
 
@@ -43,27 +44,45 @@ A phone needs HTTPS to grant microphone access and to install the app. Any stati
 (GitHub Pages included): serve the repository folder as-is. This is not set up yet; where to
 host it is the owner's decision.
 
+## AI providers
+
+«Ajustes» picks one provider for **Transcripción** (the meeting's audio) and one for
+**Traducción y coach** (text only), each with its own key and an editable model:
+
+| Provider | Transcription default | Chat default | Key header |
+|---|---|---|---|
+| Groq | `whisper-large-v3-turbo` | `openai/gpt-oss-120b` | `Authorization: Bearer` |
+| OpenAI | `gpt-4o-mini-transcribe` | `gpt-4.1-mini` | `Authorization: Bearer` |
+| Google Gemini | `gemini-3.8-flash` | `gemini-3.8-flash` | `x-goog-api-key` |
+| Anthropic Claude | — (no audio input) | `claude-haiku-5-5` | `x-api-key` |
+| Local server | your model | your model | `Authorization: Bearer`, optional |
+
+The local server must speak OpenAI's API (`/v1/audio/transcriptions`, `/v1/chat/completions`) and
+live at `http://localhost:*` or `http://127.0.0.1:*`; any other address is refused, and the page's
+CSP only allows the four providers' hosts and loopback. Defaults checked against each provider's
+documentation on 2026-10-09; `gpt-4o-mini-transcribe` is announced for removal on 2027-02-26.
+
 ## Privacy
 
 | Stays on the device | Goes out |
 |---|---|
-| The Groq API key and your voice print (IndexedDB). The voice print is never sent anywhere. | Audio segments of the meeting go to Groq (`whisper-large-v3-turbo`) for transcription, using your own key, sent only to Groq's host — only while the meeting runs: after «Terminar», segments not yet sent are dropped and uploads still in flight are cancelled. |
+| Every provider's API key and your voice print (IndexedDB). The voice print is never sent anywhere. | Audio segments of the meeting go to the transcription provider you chose, using your own key, sent only to that provider's host (or your local server) — only while the meeting runs: after «Terminar», segments not yet sent are dropped and uploads still in flight are cancelled. The consent screen and «Ajustes» name who receives the audio and who the text. |
 | The last conversation's transcript, with its Spanish translations (IndexedDB), until you delete it in «Ajustes» or start a new meeting. | |
 | Speaker embeddings: computed in the browser with the WeSpeaker model (WASM). | The first use downloads the speaker model (6.7 MB) from Hugging Face and the app's runtime (25 MB) from the app's own host; both are cached. |
-| Translation, when the browser has its own Translator (Chrome 138+). | Without it, translation falls back to Groq chat completions with the other speaker's text. |
-| The live line (word-by-word preview) uses the browser's on-device recognition only; if that is missing, the live line stays off. | Nothing else. The service worker caches the app shell and `vendor/`, never audio or Groq responses. |
+| Translation, when the browser has its own Translator (Chrome 138+). | Without it, translation falls back to the chat provider you chose, with the other speaker's text. |
+| The live line (word-by-word preview) uses the browser's on-device recognition only; if that is missing, the live line stays off. | Nothing else. The service worker caches the app shell and `vendor/`, never audio or provider responses. |
 
-**When Groq struggles.** A transcription that fails with 429, a 5xx or a dropped connection is
+**When the provider struggles.** A transcription that fails with 429, a 5xx or a dropped connection is
 retried twice (1 s, then 2 s, or the server's `Retry-After`, capped at 8 s); other 4xx are not
 retried. At most two uploads run at once; when more than 10 s of audio is waiting the screen says
-«Groq va con retraso…», and past 60 s of waiting audio the oldest segment is dropped with a
+«La transcripción va con retraso…», and past 60 s of waiting audio the oldest segment is dropped with a
 visible error instead of letting memory and delay grow (a minute of audio is 3.8 MB, and a bubble a
 minute late is no use in a live conversation). Translations run one at a time.
 
 ## Measured numbers
 
 All on synthetic voices (macOS `say`). Nothing below was measured with a real phone, a real
-person, real Groq, or the browser's own translator.
+person, any real provider API, or the browser's own translator.
 
 **Speaker separation** (`node e2e/speakers.mjs`; room condition: the other voice through a
 simulated laptop speaker; every turn tried as the opening; `MATCH_MIN` 0.50, `MARGIN` 0.11, rule

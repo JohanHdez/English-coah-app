@@ -27,7 +27,7 @@ export function shouldScan(durationMs, backlogMs) {
   return durationMs >= SPLIT_MIN_MS && backlogMs <= BACKLOG_SKIP_MS;
 }
 
-// Audio waiting for a Groq slot, in milliseconds. LATE_MS of waiting audio means
+// Audio waiting for a transcription slot, in milliseconds. LATE_MS of waiting audio means
 // the bubbles already trail the speaker by that much: the UI says so. CAP_MS is
 // the most it may hold: a minute of 16 kHz Float32 is 3.8 MB, and a bubble more
 // than a minute late is no use in a live conversation, so the oldest waiting
@@ -37,8 +37,8 @@ export const LATE_MS = 10000;
 export const CAP_MS = 60000;
 const MAX_INFLIGHT = 2;
 
-export const DROPPED_MESSAGE = '[groq] Groq va con retraso: se descartó un fragmento de audio.';
-export const LATE_STATUS = 'Groq va con retraso…';
+export const DROPPED_MESSAGE = '[transcripción] La transcripción va con retraso: se descartó un fragmento de audio.';
+export const LATE_STATUS = 'La transcripción va con retraso…';
 
 // At most `maxInflight` uploads at once; the rest wait in arrival order. Every
 // enqueue resolves (never rejects) with { ok, value } | { ok: false, error } |

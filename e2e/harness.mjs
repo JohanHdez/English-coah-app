@@ -26,6 +26,13 @@ export const MODEL_LOAD_TIMEOUT_MS = 10 * 60 * 1000;
 // Mirrors ui/meeting.js's DRAIN_TIMEOUT_MS: a wait that outlasts it is a real hang.
 export const DRAIN_TIMEOUT_MS = 35000;
 export const FAKE_KEY = 'gsk_e2e_mock_key_0000000000';
+// One fake key per provider, shaped like the real ones so redaction is exercised.
+export const FAKE_KEYS = {
+  groq: FAKE_KEY,
+  openai: 'sk-e2e-mock-key-0000000000',
+  gemini: 'AIzaE2eMockKey00000000000000000',
+  anthropic: 'sk-ant-e2e-mock-key-0000000000',
+};
 const PORT = 47831;
 // The one allowed exception: the app's own voice-model download. The exact hosts
 // seen on 2026-10-02 (the model's metadata, then its Xet-backed CDN); a different
@@ -184,9 +191,29 @@ const MIC_CLOCK = `(() => {
   md.getUserMedia = async (c) => { const s = await gum(c); window.__micT0 ??= Date.now(); return s; };
 })();`;
 
+// The settings a run starts from: every provider pointed at the stand-in (the
+// loopback overrides providers.js honours), a fake key for the chosen ones.
+function harnessSettings({ transcribe, chat, lang, mockUrl }) {
+  const chatProvider = chat || 'groq';
+  return {
+    transcribeProvider: transcribe,
+    chatProvider,
+    keys: { [transcribe]: FAKE_KEYS[transcribe], [chatProvider]: FAKE_KEYS[chatProvider] },
+    lang,
+    translate: !!chat,
+    groqBase: mockUrl,
+    bases: { openai: mockUrl, gemini: mockUrl, anthropic: mockUrl },
+  };
+}
+
+// With a chat provider named, translation is on and the browser's own Translator
+// is hidden, so every translation goes through that provider's stand-in instead
+// of an on-device model the headless profile would try to download.
+const NO_TRANSLATOR = 'delete window.Translator;';
+
 // One conversation through the whole app. Returns the events with timestamps, the
-// fixture's manifest and the Groq stand-in's request log.
-export async function runConversation({ learner, other, condition = 'room', delayMs = 900, lang = 'en', cpuThrottle = 0, log = console.log }) {
+// fixture's manifest and the stand-in's request logs.
+export async function runConversation({ learner, other, condition = 'room', delayMs = 900, lang = 'en', cpuThrottle = 0, transcribe = 'groq', chat = null, log = console.log }) {
   const name = `${slug(learner)}-${slug(other)}-${condition}`;
   const enrollWav = join(FIXTURES, `enroll-${slug(learner)}-${condition}.wav`);
   const convoWav = join(FIXTURES, `${name}.wav`);
@@ -210,7 +237,7 @@ export async function runConversation({ learner, other, condition = 'room', dela
       await first.evaluate(session, `
         import('./store.js').then(async (m) => {
           await m.set('consent', true);
-          await m.set('settings', { groqKey: ${JSON.stringify(FAKE_KEY)}, lang: ${JSON.stringify(lang)}, translate: false, groqBase: ${JSON.stringify(mock.url)} });
+          await m.set('settings', ${JSON.stringify(harnessSettings({ transcribe, chat, lang, mockUrl: mock.url }))});
           await m.del('print');
           await m.del('lastTranscript');
         });
@@ -228,7 +255,7 @@ export async function runConversation({ learner, other, condition = 'room', dela
       // window.__ec is created by app.js; the slowdown is read when the meeting's
       // worker starts, after the app has run.
       const slow = cpuThrottle ? `;addEventListener('DOMContentLoaded', () => { if (window.__ec) window.__ec.cpuSlowdown = ${cpuThrottle}; });` : '';
-      const page = await openPage(chrome, base, { initScript: MIC_CLOCK + slow, cpuThrottle });
+      const page = await openPage(chrome, base, { initScript: MIC_CLOCK + slow + (chat ? NO_TRANSLATOR : ''), cpuThrottle });
       const { session } = page;
       if (cpuThrottle) log(`meeting: CPU throttled ${cpuThrottle}×`);
       await startMeeting(chrome, session);
@@ -254,7 +281,9 @@ export async function runConversation({ learner, other, condition = 'room', dela
         log(`meeting: DevTools throttling: page yes; ${page.throttled.join('; ') || 'no other target'}`);
         log(`meeting: embed worker slowed ${await chrome.evaluate(session, 'window.__ec.cpuSlowdown')}× by holding its thread (DevTools cannot throttle a worker)`);
       }
-      result = { name, learner, other, condition, cpuThrottle, manifest, micT0, events, embeds, requests: mock.requests.slice(), errors };
+      const misrouted = [...mock.requests, ...mock.chats].filter((r) => !r.auth || r.provider !== (mock.chats.includes(r) ? chat : transcribe));
+      for (const r of misrouted) errors.push(`[e2e] request ${r.n} went to ${r.provider} (auth in its own header: ${r.auth})`);
+      result = { name, learner, other, condition, cpuThrottle, transcribe, chat, manifest, micT0, events, embeds, requests: mock.requests.slice(), chats: mock.chats.slice(), errors };
     } finally {
       await chrome.close();
     }

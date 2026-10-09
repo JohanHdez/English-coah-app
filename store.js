@@ -3,6 +3,8 @@
 // transcript — goes through get/set/del here instead of scattering indexedDB calls,
 // so every screen agrees on where state lives and the database is opened once.
 
+import { migrateSettings } from './providers.js';
+
 const DB_NAME = 'english-coach';
 const STORE_NAME = 'ec';
 const DB_VERSION = 1;
@@ -52,4 +54,13 @@ export async function del(key) {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+}
+
+// Settings are read through here so the Phase 1 shape ({ groqKey, groqBase })
+// is migrated once, on the first load after the update, and written back.
+export async function loadSettings() {
+  const stored = await get('settings');
+  const settings = migrateSettings(stored);
+  if (stored && (JSON.stringify(stored) !== JSON.stringify(settings))) await set('settings', settings);
+  return settings;
 }
