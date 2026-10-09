@@ -29,10 +29,13 @@ export function isMobile({ uaDataMobile, userAgent = '', maxTouchPoints = 0, coa
   // Client hints answer `mobile: false` on an Android tablet, which is still a
   // tablet on mobile data as far as a 120 MB download goes.
   if (uaDataMobile === true || /Android|iPhone|iPad|iPod/i.test(userAgent)) return true;
+  // Desktop-site mode on a phone reports `mobile: false` and a desktop UA, but the
+  // pointer and the screen are still a phone's.
+  if (coarse && shortSide < 768) return true;
   if (uaDataMobile === false) return false;
   if (/Mobile/i.test(userAgent)) return true;
   if (/Macintosh/.test(userAgent) && maxTouchPoints > 1) return true; // iPadOS reports a Mac
-  return coarse && shortSide < 768;
+  return false;
 }
 
 // The facts isMobile() reads, from an injected environment (the page passes

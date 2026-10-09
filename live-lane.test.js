@@ -72,7 +72,9 @@ const ANDROID_TABLET = 'Mozilla/5.0 (Linux; Android 14; SM-X710) AppleWebKit/537
 test('isMobile: User-Agent Client Hints decide when the browser has them, except an Android tablet', () => {
   assert.equal(isMobile({ uaDataMobile: true, userAgent: MAC }), true);
   assert.equal(isMobile({ uaDataMobile: false, userAgent: MAC, maxTouchPoints: 0 }), false);
-  assert.equal(isMobile({ uaDataMobile: false, userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Mobile', coarse: true, shortSide: 400 }), false);
+  assert.equal(isMobile({ uaDataMobile: false, userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Mobile', coarse: false, shortSide: 400 }), false);
+  assert.equal(isMobile({ uaDataMobile: false, userAgent: MAC, coarse: true, shortSide: 412 }), true);
+  assert.equal(isMobile({ uaDataMobile: false, userAgent: MAC, coarse: true, shortSide: 1080 }), false);
   assert.equal(isMobile({ uaDataMobile: false, userAgent: ANDROID_TABLET }), true);
 });
 
