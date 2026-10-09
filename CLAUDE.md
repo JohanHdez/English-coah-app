@@ -57,7 +57,7 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 
 | Path | Responsibility | Task |
 |---|---|---|
-| `lib/segmenter.js` `lib/stitch.js` `lib/queue.js` `lib/langid.js` `lib/live.js` + tests | Copied from the extension, unchanged except import paths (and `lib/live.js`'s result joining, see `docs/ORIGIN.md`) | 1 |
+| `lib/segmenter.js` `lib/stitch.js` `lib/queue.js` `lib/langid.js` `lib/live.js` `lib/coach.js` `lib/phrasebook.js` + tests | Copied from the extension, unchanged except import paths (and `lib/live.js`'s result joining, see `docs/ORIGIN.md`) | 1 |
 | `vendor/` | transformers.js + ONNX Runtime Web, copied | 1 |
 | `recorder-worklet.js` | Copied: 100 ms blocks with RMS | 1 |
 | `tools/serve.mjs` | Local static server (localhost is a secure context, so the mic works) | 1 |
@@ -77,7 +77,8 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 | `ui/coach.js` `coachdata.js` + `coachdata.test.js` | The coach panel above the conversation («Frases» / «Notas» / «Contexto», and «Respuesta» taking the same panel) and its pure settings writes; profile and context fields shared with Ajustes | P2-5 |
 | `e2e/mock-groq.mjs` `e2e/run.mjs` `e2e/harness.mjs` `e2e/score.mjs` `e2e/smoke.mjs` | The whole app in Chrome with a fake mic and a stand-in for every provider's shapes, scored per cue; a UI smoke test | 6, 7, P2-3 |
 | `live-lane.js` + `live-lane.test.js` `preview-worker.js` | Which live line a meeting gets (on-device Web Speech, the install button, the local Whisper preview lane on WebGPU, or a note saying why none) and the preview lane's stitching and slowness rule; the Whisper worker | P2-7 |
-| `README.md` `CLAUDE.md` `docs/ORIGIN.md` | Documentation | 1, 8 |
+| `lib/markdown.js` + `lib/markdown.test.js` `ui/report.js` | The closing report: a tiny safe markdown renderer (nodes only, never `innerHTML`) and the report block under «Terminar» | P2-6 |
+| `README.md` `CLAUDE.md` `docs/ORIGIN.md` `docs/BACKLOG.md` | Documentation; the backlog holds requests not yet in a plan | 1, P2-8 |
 
 ## Runtime contexts
 
@@ -123,6 +124,9 @@ node e2e/run.mjs Paulina Samantha --live=preview   # live line: Web Speech hidde
 node e2e/run.mjs Paulina Samantha --live=none      # Web Speech hidden, lane off: the baseline for its cost
 node e2e/run.mjs Paulina Samantha --live=preview --mobile   # a phone (client hints): the lane must not start
 ```
+
+Names are case-sensitive (`Paulina`, `Mónica`); in zsh quote each pair's names separately, since an
+unquoted `$pair` is not word-split. Run one harness process at a time: they share `e2e/.profile`.
 
 `e2e/speakers.mjs` builds any missing fixture, serves the repo in-process, opens
 `e2e/speakers.html` in headless Chrome (profile in `e2e/.profile`) and embeds every turn cropped
@@ -181,6 +185,27 @@ pipeline's labels and timing, never Whisper's accuracy.
   trip the slowness rule (two passes over 1.5 s in a row) and retire it, which the screen says.
   Bilingual meetings get no live line. Web Speech itself went silent for 3 s at one speaker change
   in Paulina–Samantha (cue 2, every run).
+- Deferred minors from Phase 2 (none blocks a release):
+  - Smoke timing flake, uninvestigated (Task 1).
+  - A split's parts go to the front of the upload queue, so under a queued backlog the cap's
+    `shift()` drops the newest part instead of the oldest audio (Task 2). The 80/140 ms timing test may
+    flake under load; untested: a part's upload failing, `close()` during a split, a scan failure
+    cancelling the whole upload; two tests hang when their assertion fails.
+  - A Wake Lock request pending through both «Terminar» and «Nueva reunión» is kept (guarded by
+    `stopping`, not the epoch; `ui/meeting.js`), and a stale `onSegment` can call `session?.segment`
+    while `session` is null.
+  - `https://localhost` passes the local-base check but the CSP blocks it (generic error); the privacy
+    text overstates what is sent when translation is off; four more in the Task 3 review.
+  - The profile/context debounce (300 ms) drops an edit only if the tab closes inside the window; it
+    should flush on blur, `pagehide` and destroy.
+  - `lib/markdown.js`: a table swallows a following pipe-containing line; `\|` is unhandled; no
+    pathological-input test; the report's reopen path is untested.
+  - One desktop harness node process did not exit after saving its results (no children, no sockets),
+    uninvestigated.
+- Phase 2 measured only on the stand-in and the owner's one desktop test; the real OpenAI, Gemini and
+  Claude endpoints were never called, and Groq only for translation latency.
+- Claude is chat-only (no audio input). Gemini's transcription returns no language, so bilingual
+  meetings decide it from text.
 - The speaker model is downloaded from Hugging Face on first use; offline first runs fail.
 - One-word backchannels are lost or mislabelled when they share a segment with the other voice.
 - The split point of segments of 3 s or more is biased up to 0.75 s early.

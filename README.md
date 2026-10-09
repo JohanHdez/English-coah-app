@@ -4,11 +4,12 @@ A web app for phone and desktop that sits on the table during a meeting and list
 microphone. It tells the learner's voice («Yo») from everyone else's («Interlocutor») by voice
 print, shows the conversation transcribed in English with a Spanish translation under the other
 speaker's bubbles, and lets the learner correct a wrong label by tapping, or switch to a manual
-"I'm speaking" mode.
+"I'm speaking" mode. It also coaches: a suggested answer («Respuesta»), phrases, notes, a profile
+and context, and a closing report.
 
 The product is Spanish (every label and error the user sees); the repository is English. The
-approved spec is `docs/2026-09-29-plan.md` (Spanish); the phase 1 plan is
-`docs/2026-09-29-phase1-plan.md`.
+approved spec is `docs/2026-09-29-plan.md` (Spanish); the phase 1 and 2 plans are
+`docs/2026-09-29-phase1-plan.md` and `docs/2026-10-09-phase2-plan.md`.
 
 ## Who it is for
 
@@ -57,10 +58,42 @@ host it is the owner's decision.
 | Anthropic Claude | — (no audio input) | `claude-haiku-5-5` | `x-api-key` |
 | Local server | your model | your model | `Authorization: Bearer`, optional |
 
+What each provider receives:
+
+| Job | Goes to | What it receives |
+|---|---|---|
+| Transcripción | The provider chosen for transcription (Groq, OpenAI, Gemini, or your local server) | Audio segments of the meeting, as WAV, with the language when known. |
+| Traducción y coach | The provider chosen for chat (any of the five) | Text only: the other speaker's sentences for translation (when the browser has no Translator of its own); for «Respuesta» and the report, the conversation so far plus «Tu perfil» and «Contexto de hoy». |
+
+Claude has no audio input, so it is offered for chat only. Each key is sent only to its own
+provider's host. The voice print and the live line's text never leave the device.
+
 The local server must speak OpenAI's API (`/v1/audio/transcriptions`, `/v1/chat/completions`) and
 live at `http://localhost:*` or `http://127.0.0.1:*`; any other address is refused, and the page's
 CSP only allows the four providers' hosts and loopback. Defaults checked against each provider's
 documentation on 2026-10-09; `gpt-4o-mini-transcribe` is announced for removal on 2027-02-26.
+
+## The coach
+
+Beside the conversation the app coaches the learner's English. Everything below goes through the
+chat provider chosen in «Ajustes» («Traducción y coach»); it receives text only, never audio.
+
+- **«Respuesta»** (meeting screen): asks for a suggested answer to what was just said, using the
+  conversation so far, «Tu perfil», «Contexto de hoy» and the meeting's language. It shows the
+  answer with its key term in bold, and ideas; each one copies with a tap. One request at a time.
+  An answer that arrives after «Nueva reunión» is dropped.
+- **«Frases»**: a curated phrasebook by category (`lib/phrasebook.js`), tap to copy. «Mis frases»
+  adds your own English phrase with its Spanish meaning (200 characters each). Not model output.
+- **«Notas»**: short notes with a title and text, opened, closed and deleted during the meeting.
+- **«Tu perfil»** and **«Contexto de hoy»** (1500 characters each): who you are and what this
+  meeting is about. Editable in the panel's «Contexto» tab during the meeting and in «Ajustes»; the
+  next «Respuesta» and the report read the latest values.
+- **«Generar informe»** (after «Terminar»): a Spanish report of the meeting, rendered by
+  `lib/markdown.js` (headings, lists, bold, tables and paragraphs only, built with
+  `createElement`, so HTML in the model's output shows as text). «Copiar» and «Descargar .md»;
+  the last report is stored with the transcript and shown again when it is reopened.
+
+The coach prompts and limits are copied from the extension (`docs/ORIGIN.md`).
 
 ## Privacy
 
@@ -82,7 +115,8 @@ minute late is no use in a live conversation). Translations run one at a time.
 ## Measured numbers
 
 All on synthetic voices (macOS `say`). Nothing below was measured with a real phone, a real
-person, any real provider API, or the browser's own translator.
+person beyond one desktop test, a real OpenAI, Gemini or Claude API, or the browser's own translator.
+Only the translation latency below used a real provider (Groq).
 
 **Speaker separation** (`node e2e/speakers.mjs`; room condition: the other voice through a
 simulated laptop speaker; every turn tried as the opening; `MATCH_MIN` 0.50, `MARGIN` 0.11, rule
@@ -128,6 +162,36 @@ trails the speaker by more than 4 s, long segments skip the window scan (4/11 di
 little: embedding a whole long segment costs about as much as its windows. A real Android phone and
 iPhone still have to be measured.
 
+**Phase 2, measured on 2026-10-09** (same synthetic voices; the stand-in for every provider except
+where it says the real Groq):
+
+- *Transcribing while the voice print is computed.* Bubble latency after the speaker stops, room
+  condition, Groq stand-in: p50 2.0 → 1.5 s and p90 7.0 → 6.2 s. With the page throttled 4×: p50
+  7.3 → 6.9 s, p90 12.8 → 11.9 s.
+- *Translation with the real Groq* (synthetic sentences, the app's own code): `openai/gpt-oss-120b`
+  p50 0.80 s per bubble, `openai/gpt-oss-20b` p50 0.55 s.
+- *The live line.* Chrome's on-device speech (pack installed): first text p50 0.62–0.72 s after the
+  speaker starts. The local Whisper `tiny.en` lane on WebGPU: p50 1.05–1.07 s, p90 2.1–2.75 s, with
+  no measurable cost on bubble latency. The lane's first download is about 120 MB (encoder 32.9 MB,
+  decoder 86.7 MB), on by default on a desktop only. «Instalar reconocimiento de voz»: the live line
+  was up 11.2 s after the tap, including the pack download.
+- *Providers* (stand-in runs): Groq, OpenAI and Gemini transcription each scored 93.6 % speaker
+  accuracy (word-weighted) on the Paulina / Samantha room fixture, p50 1.6 s. The stand-in checks
+  request shapes and keys, not what a real endpoint answers.
+- *Whole-app runs for this release* (`node e2e/run.mjs … --condition=room`, Groq stand-in):
+  - Paulina / Samantha: 93.6 % of 156 words, 19/20 cues heard, 17 bubbles (4 mixed), latency p50
+    2.3 s · p90 8.1 s, 8/22 audio-mixed requests. An earlier run of the same pair heard only 6/20
+    cues (95.1 % of 61 words) and is not counted: capture starved, the known fake-microphone flake.
+  - Mónica / Daniel: 94.9 % of 156 words, 18 bubbles (2 mixed), latency p50 1.4 s · p90 6.4 s,
+    5/21 audio-mixed requests.
+  - Paulina / Mónica: 96.8 % of 155 words, 17 bubbles (3 mixed), latency p50 1.7 s · p90 5.8 s,
+    7/22 audio-mixed requests.
+  - Live line in those runs (Paulina / Samantha, on-device speech): text after onset p50 0.60 s ·
+    p90 3.72 s; one blank stretch over 2.5 s (2.9 s, cue 2). No console or error events in any run.
+  - `node e2e/smoke.mjs` passed with no console errors; `node tools/check.mjs`: 22 files · 370 tests
+    · 0 failing.
+  The mixed-segment criterion (< 10 %) is still not met.
+
 ## Known limits
 
 - Short turns: a one-word reply sharing a segment with the other voice is lost or mislabelled.
@@ -141,6 +205,18 @@ iPhone still have to be measured.
 - Synthetic voices are more stable than people. The thresholds are calibrated on them and must be
   recalibrated with real voices.
 - The tab or a remote call is not captured; only what the microphone hears.
+- Claude has no audio input: choose Groq, OpenAI, Gemini or a local server for «Transcripción».
+- Gemini's transcription reports no language, so in a bilingual meeting the language of each
+  bubble is decided from its text alone (`lib/langid.js`). Gemini 3.x Flash models think by default;
+  the added latency per segment is not measured.
+- Bilingual meetings get no live line (the recogniser hears one language), and the Whisper preview
+  lane is English-only and needs WebGPU.
+- First-run downloads: about 31.7 MB for the speaker model and runtime, plus about 120 MB for the
+  local Whisper live lane on a desktop with WebGPU (on a phone or tablet only once turned on in
+  «Ajustes»).
+- Not measured: a real phone, a real voice beyond the owner's one desktop test, and real OpenAI,
+  Gemini or Claude calls. Only Groq was called for real, for translation latency.
+- `gpt-4o-mini-transcribe` is announced for removal on 2027-02-26.
 
 ## Layout
 
