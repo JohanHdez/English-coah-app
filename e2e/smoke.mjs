@@ -393,18 +393,72 @@ async function main() {
     await setGroqKey(FAKE_KEY);
     console.log(`coach: with no key, «Respuesta» says "${keyError}"`);
 
+    // The closing report: the stand-in answers with Markdown carrying a <script> and an
+    // <img onerror>. Headings and lists must be elements; the hostile HTML must be text.
+    const reportBtnShown = await chrome.evaluate(session, "[...document.querySelectorAll('.meeting .controls button')].some((b) => b.textContent === 'Generar informe' && !b.hidden)");
+    if (!reportBtnShown) throw new Error('[smoke] «Generar informe» was not offered after «Terminar»');
+    await setGroqKey('');
+    await tap(chrome, session, '.meeting .report-btn');
+    const reportKeyError = await waitFor(() => chrome.evaluate(session, "document.querySelector('.report .report-status.error')?.textContent || ''"), { timeoutMs: 10000, label: 'the report missing-key error' });
+    if (reportKeyError !== '[coach] Falta la API key de Groq (ábrela en Ajustes).') throw new Error(`[smoke] unexpected report error: "${reportKeyError}"`);
+    await setGroqKey(FAKE_KEY);
+    const reportChatsBefore = mock.chats.length;
+    const tReport = Date.now();
+    await tap(chrome, session, '.meeting .report-btn');
+    const busyReport = await chrome.evaluate(session, "document.querySelector('.meeting .report-btn').disabled");
+    if (!busyReport) throw new Error('[smoke] «Generar informe» can be tapped again while one request is in flight');
+    await waitFor(() => chrome.evaluate(session, "document.querySelectorAll('.report .report-body h2').length > 0"), { timeoutMs: 20000, everyMs: 20, label: 'the report' });
+    const reportMs = Date.now() - tReport;
+    const reportDom = await chrome.evaluate(session, `(() => {
+      const b = document.querySelector('.report .report-body');
+      return {
+        h2: b.querySelectorAll('h2').length, h3: b.querySelectorAll('h3').length,
+        ul: b.querySelectorAll('ul > li').length, ol: b.querySelectorAll('ol > li').length,
+        strong: [...b.querySelectorAll('strong')].map((n) => n.textContent),
+        scripts: b.querySelectorAll('script').length, imgs: b.querySelectorAll('img').length,
+        pwned: window.__pwned === 1, text: b.textContent,
+      };
+    })()`);
+    if (reportDom.h2 !== 1 || reportDom.h3 !== 1 || reportDom.ul !== 2 || reportDom.ol !== 2
+      || !reportDom.strong.includes('Angular') || !reportDom.strong.includes('phrasal verbs')) {
+      throw new Error(`[smoke] the report did not render as elements: ${JSON.stringify(reportDom)}`);
+    }
+    if (reportDom.scripts || reportDom.imgs || reportDom.pwned
+      || !reportDom.text.includes('<script>window.__pwned = 1</script>') || !reportDom.text.includes('<img src=x onerror=')) {
+      throw new Error(`[smoke] HTML in the report did not stay text: ${JSON.stringify(reportDom)}`);
+    }
+    const reportChats = mock.chats.slice(reportChatsBefore);
+    if (reportChats.length !== 1) throw new Error(`[smoke] one report request expected, saw ${reportChats.length}`);
+    const storedReport = await chrome.evaluate(session, "import('./store.js').then((m) => m.get('lastTranscript'))");
+    if (!storedReport?.report?.includes('## Resumen')) throw new Error('[smoke] the report was not storedReport with the transcript');
+    const download = await chrome.evaluate(session, `(() => {
+      const urls = [];
+      const orig = URL.createObjectURL;
+      URL.createObjectURL = (blob) => { urls.push([blob.type, blob.size]); return orig.call(URL, blob); };
+      document.querySelector('.report .report-download').click();
+      return urls;
+    })()`);
+    if (download.length !== 1 || !download[0][0].startsWith('text/markdown') || download[0][1] < 20) throw new Error(`[smoke] «Descargar .md» did not build a local Blob: ${JSON.stringify(download)}`);
+    await chrome.evaluate(session, "Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })");
+    await tap(chrome, session, '.report .report-copy');
+    const copyMsg = await waitFor(() => chrome.evaluate(session, "document.querySelector('.meeting .toast:not([hidden])')?.textContent || ''"), { timeoutMs: 3000, everyMs: 20, label: 'the clipboard message' });
+    if (!/^No se pudo copiar/.test(copyMsg)) throw new Error(`[smoke] unexpected clipboard message: "${copyMsg}"`);
+    console.log(`report: ${reportMs} ms from tap to render; ${reportDom.h2} h2, ${reportDom.h3} h3, ${reportDom.ul} bullets, ${reportDom.ol} numbered, bold ${JSON.stringify(reportDom.strong)}; <script> and <img onerror> stayed text; stored with the transcript; Blob built locally; no clipboard -> "${copyMsg}"`);
+
     // A «Respuesta» still waiting when «Terminar» and «Nueva reunión» run must not paint
     // into the next meeting: the stand-in is slowed so the request outlives both taps.
     await mock.setChatDelay(1500);
     await tap(chrome, session, '.meeting .reply-btn');
     await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-reply .reply-status')?.textContent === 'Pensando…'"), { label: '«Pensando…» before the new meeting' });
+    await tap(chrome, session, '.meeting .report-btn');
+    await waitFor(() => chrome.evaluate(session, "document.querySelector('.report .report-status')?.textContent === 'Preparando el informe…'"), { label: '«Preparando el informe…» before the new meeting' });
     await tap(chrome, session, '.meeting .new-meeting');
     await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-reply').hidden && !document.querySelector('.meeting .reply-btn').disabled"), { label: 'the panel reset by «Nueva reunión»' });
     await sleep(2000);
-    const leaked = await chrome.evaluate(session, "!document.querySelector('.coach-reply').hidden || document.querySelector('.coach-reply').textContent !== ''");
+    const leaked = await chrome.evaluate(session, "!document.querySelector('.coach-reply').hidden || document.querySelector('.coach-reply').textContent !== '' || !document.querySelector('.report').hidden || document.querySelector('.report-body').textContent !== ''");
     await mock.setChatDelay(null);
     if (leaked) throw new Error('[smoke] a reply from the previous meeting painted into the next one');
-    console.log('coach: a «Respuesta» in flight when «Nueva reunión» ran was dropped; nothing painted into the new meeting');
+    console.log('coach: a «Respuesta» and a report in flight when «Nueva reunión» ran was dropped; nothing painted into the new meeting');
     await waitFor(
       () => chrome.evaluate(session, "document.querySelector('.meeting .talk-toggle')?.disabled === false"),
       { timeoutMs: 60000, label: 'the new meeting to record' },

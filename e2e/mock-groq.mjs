@@ -128,8 +128,20 @@ function shapeOf(req) {
 // The coach's suggested reply is recognised by its prompt and answered with the JSON
 // shape askReply parses; the bold key term lets a run check it renders as <b>.
 export const STAND_IN_ANSWER = 'I mostly work with **Angular** every day.';
+// The closing report is recognised by its prompt and answered with Markdown that also
+// carries hostile HTML, which a run checks renders as text.
+export const STAND_IN_REPORT = [
+  '## Resumen',
+  'Hablaste de **Angular** con confianza. <script>window.__pwned = 1</script>',
+  '### Qué mejorar',
+  '- Usa el pasado: <img src=x onerror="window.__pwned = 1">',
+  '- Practica **phrasal verbs**',
+  '1. Primero',
+  '2. Segundo',
+].join('\n');
 function chatReply(provider, userText) {
-  const text = /Conversation so far:/.test(userText)
+  const text = /Transcripción (completa|\(sólo)/.test(userText) ? STAND_IN_REPORT
+    : /Conversation so far:/.test(userText)
     ? JSON.stringify({
       answer: [{ en: STAND_IN_ANSWER, es: 'trabajo sobre todo con Angular' }],
       ideas: [{ en: 'My day-to-day work is mostly **Angular** and RxJS.', es: 'mi trabajo diario' }, { en: 'I focus on Angular.', es: 'me centro en Angular' }],

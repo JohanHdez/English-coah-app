@@ -615,3 +615,52 @@ textarea {
     padding: 1.5rem 24px;
   }
 }
+
+.report {
+  flex-shrink: 0;
+  max-height: 45vh;
+  overflow-y: auto;
+  padding: 0.6rem 0.75rem;
+  background: #16181c;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.report-head {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+}
+
+.report-title {
+  flex: 1;
+  font-weight: 600;
+}
+
+.report-status {
+  margin: 0.25rem 0;
+  color: var(--muted);
+}
+
+.report-status.error {
+  color: var(--danger, #ff8a80);
+}
+
+.report-body h2,
+.report-body h3,
+.report-body h4 {
+  margin: 0.8rem 0 0.3rem;
+  font-size: 1rem;
+}
+
+.report-body p,
+.report-body ul,
+.report-body ol {
+  margin: 0.3rem 0;
+}
+
+.report-body ul,
+.report-body ol {
+  padding-left: 1.3rem;
+}

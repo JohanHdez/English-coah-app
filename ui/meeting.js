@@ -18,6 +18,7 @@ import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, with
 import { MODEL_ID } from '../embed.js';
 import * as store from '../store.js';
 import { createCoachPanel } from './coach.js';
+import { createReportPanel } from './report.js';
 
 // The transcription fetch (providers.js) carries a 30 s AbortSignal.timeout, so a stalled
 // request settles on its own; this is the backstop that keeps "Terminar" from
@@ -131,7 +132,12 @@ export function renderMeeting(root, { settings, onEvent }) {
   newMeetingBtn.className = 'primary new-meeting';
   newMeetingBtn.textContent = 'Nueva reunión';
   newMeetingBtn.hidden = true;
-  controls.append(replyBtn, startBtn, resumeBtn, talkBtn, pauseBtn, stopBtn, newMeetingBtn);
+  const reportBtn = document.createElement('button');
+  reportBtn.type = 'button';
+  reportBtn.className = 'primary report-btn';
+  reportBtn.textContent = 'Generar informe';
+  reportBtn.hidden = true;
+  controls.append(replyBtn, startBtn, resumeBtn, talkBtn, pauseBtn, stopBtn, reportBtn, newMeetingBtn);
   section.append(controls);
 
   root.append(section);
@@ -161,6 +167,17 @@ export function renderMeeting(root, { settings, onEvent }) {
   });
   section.insertBefore(coach.el, transcriptEl);
   replyBtn.addEventListener('click', () => coach.ask());
+
+  let reportMd = null; // the last report, stored with the transcript
+  const report = createReportPanel({
+    settings,
+    getTurns: () => [...restored, ...(session ? session.transcript() : [])],
+    onToast: flashToast,
+    onBusy: (busy) => { reportBtn.disabled = busy; reportBtn.classList.toggle('busy', busy); },
+    onReport: (text) => { reportMd = text; persistTranscript(); },
+  });
+  section.insertBefore(report.el, controls);
+  reportBtn.addEventListener('click', () => report.generate());
 
   // --- Transcript rendering ---------------------------------------------------------
   const cache = new Map(); // t -> { text, es, esStale }
@@ -265,7 +282,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   let finishedAt = null;
   function persistTranscript() {
     const entries = withTranslations([...restored, ...(session ? session.transcript() : [])], cache);
-    store.set('lastTranscript', { entries, finishedAt }).catch(() => {});
+    store.set('lastTranscript', reportMd ? { entries, finishedAt, report: reportMd } : { entries, finishedAt }).catch(() => {});
   }
 
   // --- Live line ---------------------------------------------------------
@@ -557,6 +574,8 @@ export function renderMeeting(root, { settings, onEvent }) {
 
   stopBtn.addEventListener('click', async () => {
     coach.reset();
+    report.reset();
+    reportMd = null;
     stopping = true;
     captureEpoch++;
     running = false;
@@ -587,11 +606,15 @@ export function renderMeeting(root, { settings, onEvent }) {
     persistTranscript();
     captureLost = false;
     setStatus('Reunión terminada.');
+    reportBtn.hidden = false;
     newMeetingBtn.hidden = false;
   });
 
   newMeetingBtn.addEventListener('click', async () => {
     coach.reset();
+    report.reset();
+    reportMd = null;
+    reportBtn.hidden = true;
     const audioContext = createAudioContext();
     newMeetingBtn.hidden = true;
     transcriptEl.textContent = '';
@@ -615,6 +638,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     destroyed = true;
     running = false;
     coach.destroy();
+    report.destroy();
     document.removeEventListener('visibilitychange', onVisibility);
     window.removeEventListener('pageshow', onVisibility);
     session?.close();
