@@ -24,6 +24,10 @@ or in the extension is ported by hand; the two do not share history.
 | `vendor/ort-wasm-simd-threaded.asyncify.wasm` | `vendor/ort-wasm-simd-threaded.asyncify.wasm` | `ded2c34` |
 | `e2e/cdp.mjs` | `e2e/cdp.mjs` | `ded2c34` |
 | `e2e/mock-groq.mjs` | `e2e/mock-groq.mjs` | `ded2c34` |
+| `lib/coach.js` | `coach.js` | `ded2c34` (modified, see note below) |
+| `lib/coach.test.js` | `coach.test.js` | `ded2c34` (adapted, see note below) |
+| `lib/phrasebook.js` | `phrasebook.js` | `ded2c34` |
+| `lib/phrasebook.test.js` | `phrasebook.test.js` | `ded2c34` |
 | `LICENSE` | `LICENSE` | `ded2c34` |
 | `THIRD-PARTY-NOTICES.md` | `THIRD-PARTY-NOTICES.md` | `ded2c34` |
 
@@ -65,3 +69,41 @@ arrival-time cue as `arrivalCue` for comparison.
 
 `window.__ec.events` (only on 127.0.0.1) now stores a copy of each event's entry, since the session
 keeps mutating the entry as later pieces fold into it and the harness needs every intermediate text.
+
+## `lib/coach.js`: diverged from the copy (Phase 2, Task 4)
+
+The coach's own network layer is gone: `PROVIDERS`, `resolveProvider`, `callGroq`, `callAnthropic`,
+`groqBaseOf`, `anthropicBaseOf`, `redact`/`KEY_SHAPED` and the old `ask` provider switch. `ask` now
+calls `callChat` from `providers.js` (provider, key, model, retries, timeout, redaction and staged
+errors all come from there) and reads `settings.chatProvider` / `settings.keys` / `settings.models`.
+Kept as copied: every prompt, `parseReply`, `parseJsonLoose`, `runsOf`, `turnsToText`, the limits
+(`JSON_BUDGET`, `REPORT_MAX_CHARS`, `TURN_MAX_CHARS`, profile/context caps) and the thinking floor
+(now keyed by `chatProvider`). Differences worth knowing:
+
+- `DEFAULT_COACH` lost `reportProvider`, `reportModel`, `liveCoach`, `autoReport`: the provider is the
+  learner's single chat choice, and the reply and the report use the same one.
+- The JSON schema reaches `callChat` only where output can be constrained: Groq with a `openai/gpt-oss*`
+  model (the extension's rule), OpenAI, Gemini, Claude. Other Groq models and the local server get no
+  schema; `parseJsonLoose` recovers the JSON. The extension's `strict: true` and `temperature: 0.3`
+  are not sent (`buildChat` sends neither).
+- `CoachError` messages carry the `[coach]` stage prefix.
+- `askReply`/`askReport` take two optional extras: `signal` and `chat` (defaults to `callChat`; the tests
+  inject a stub).
+- The extension's "fall back to whichever provider has a key" is dropped: a missing key for the chosen
+  provider is `[coach] Falta la API key de <proveedor>.`
+
+## `lib/coach.test.js`: adapted tests
+
+Unchanged apart from the settings shape (`reportProvider`/`reportModel`/`groqKey`/`anthropicKey` became
+`chatProvider` + `keys.<id>`, in the `REPLY_SETTINGS` and `CLAUDE_SETTINGS` constants), because those
+tests went through the removed Groq/Anthropic code. Their assertions are untouched; the `fetch` stubs still
+work because `callChat` builds the same bodies. Adapted tests (12): the Claude report is given room to
+think; Groq keeps its measured ceiling (also drops the now-redundant `reportProvider: 'groq'` override);
+never send a sampling parameter to Claude; askReply clips a repetition-loop turn; askReply's system
+prompt names / does not name the 'multi' rule (2); askReply labels turns with their language;
+askReport's system prompt names / does not name the 'multi' rule (2); askReport labels turns with their
+language; askReport marks the transcript partial when a turn is clipped; askReport reports a complete
+transcript when same-speaker turns merge. Added (7): the `callChat` request of `askReply` and
+`askReport` (system, user, schema, ceiling, stage), schema withheld per provider, thinking ceiling, an
+OpenAI request through the real layer, the missing-key error, and the no-learner-turns refusal.
+`lib/phrasebook.js` and `lib/phrasebook.test.js` are verbatim.
