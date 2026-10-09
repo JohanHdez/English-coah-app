@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations } from './bubbles.js';
+import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations, mayInstallCapture } from './bubbles.js';
 
 test('foldTranslation: a brand new bubble carries no translation yet', () => {
   assert.deepEqual(foldTranslation(undefined, 'Hello.'), { text: 'Hello.' });
@@ -120,4 +120,24 @@ test('withTranslations stores the Spanish only for the words it translated', () 
   assert.equal(out[1].es, undefined, 'stale: the bubble grew after it was translated');
   assert.equal(out[2].es, undefined);
   assert.equal(entries[0].es, undefined, 'the live entries are not mutated');
+});
+
+test('mayInstallCapture: a live meeting takes the capture it just opened', () => {
+  assert.equal(mayInstallCapture({ destroyed: false, stopping: false, finishedAt: null }), true);
+});
+
+test('mayInstallCapture: nothing is installed once the screen is gone, Terminar was tapped, or the meeting finished', () => {
+  assert.equal(mayInstallCapture({ destroyed: true, stopping: false, finishedAt: null }), false);
+  assert.equal(mayInstallCapture({ destroyed: false, stopping: true, finishedAt: null }), false);
+  assert.equal(mayInstallCapture({ destroyed: false, stopping: false, finishedAt: 1 }), false);
+});
+
+test('mayInstallCapture: a live meeting takes the capture it just opened', () => {
+  assert.equal(mayInstallCapture({ destroyed: false, stopping: false, finishedAt: null }), true);
+});
+
+test('mayInstallCapture: nothing is installed once the screen is gone, Terminar was tapped, or the meeting finished', () => {
+  assert.equal(mayInstallCapture({ destroyed: true, stopping: false, finishedAt: null }), false);
+  assert.equal(mayInstallCapture({ destroyed: false, stopping: true, finishedAt: null }), false);
+  assert.equal(mayInstallCapture({ destroyed: false, stopping: false, finishedAt: 1 }), false);
 });

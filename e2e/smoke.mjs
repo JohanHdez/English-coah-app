@@ -210,17 +210,35 @@ async function main() {
     const afterResume = await bubbleCount(chrome, session);
     console.log(`meeting: «Reanudar» restarted capture into the same meeting (${beforeLoss} -> ${afterResume} bubbles, ${await chrome.evaluate(session, 'window.__streams.length')} streams opened)`);
 
+    // Phase 2, task 1: capture is lost again, «Reanudar» is tapped and «Terminar»
+    // right behind it, before the microphone has finished opening. The stream the
+    // resume opens must be released, not installed, and nothing may reach the
+    // stand-in once «Terminar» is done.
+    await chrome.evaluate(session, `
+      window.__streams.forEach((s) => s.getTracks().forEach((t) => t.stop()));
+      document.dispatchEvent(new Event('visibilitychange'));
+    `);
+    const streamsBeforeRace = await chrome.evaluate(session, 'window.__streams.length');
+    await tap(chrome, session, '.meeting .resume-capture');
     // N3 + N4: "Terminar" must complete (drain, bounded) and mark the saved
     // transcript finished, so a future mount does not offer it as unfinished.
     const t3 = Date.now();
-    await chrome.evaluate(session, `
-      [...document.querySelectorAll('.meeting .controls button')].find((b) => b.textContent === 'Terminar').click();
-    `);
+    await tap(chrome, session, '.meeting .controls .stop-meeting');
     await waitFor(
       () => chrome.evaluate(session, "document.querySelector('.meeting .status')?.textContent === 'Reunión terminada.'"),
       { timeoutMs: DRAIN_TIMEOUT_MS + 5000, label: '"Terminar" to complete (drain, then "Reunión terminada.")' },
     );
     console.log(`meeting: "Terminar" completed in ${((Date.now() - t3) / 1000).toFixed(1)} s`);
+    const uploadsAtStop = mock.requests.length;
+    await sleep(4000);
+    const live = await chrome.evaluate(session, "window.__streams.flatMap((s) => s.getTracks()).filter((t) => t.readyState !== 'ended').length");
+    const opened = await chrome.evaluate(session, 'window.__streams.length');
+    if (opened <= streamsBeforeRace) throw new Error('[smoke] the race did not open a microphone: «Reanudar» had no effect');
+    if (live !== 0) throw new Error(`[smoke] ${live} microphone track(s) still live after «Terminar» during «Reanudar»`);
+    if (mock.requests.length !== uploadsAtStop) {
+      throw new Error(`[smoke] ${mock.requests.length - uploadsAtStop} upload(s) reached the stand-in after «Terminar»`);
+    }
+    console.log(`meeting: «Terminar» right behind «Reanudar» -> all ${opened} streams ended, ${mock.requests.length - uploadsAtStop} uploads after it`);
     const newMeetingShown = await chrome.evaluate(session, `
       [...document.querySelectorAll('.meeting .controls button')].some((b) => b.textContent === 'Nueva reunión' && !b.hidden)
     `);

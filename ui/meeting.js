@@ -14,7 +14,7 @@ import { startCapture, createAudioContext } from '../capture.js';
 import { transcribeGroq } from '../transcribe.js';
 import { toSpanish } from '../translate.js';
 import { liveAvailability, startLive } from '../lib/live.js';
-import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations } from '../bubbles.js';
+import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations, mayInstallCapture } from '../bubbles.js';
 import { MODEL_ID } from '../embed.js';
 import * as store from '../store.js';
 
@@ -118,6 +118,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   pauseBtn.disabled = true;
   const stopBtn = document.createElement('button');
   stopBtn.type = 'button';
+  stopBtn.className = 'stop-meeting';
   stopBtn.textContent = 'Terminar';
   stopBtn.disabled = true;
   const newMeetingBtn = document.createElement('button');
@@ -293,6 +294,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   let destroyed = false;
   const gate = createMeetingGate();
   let running = false;
+  let stopping = false;
   let paused = false;
   let wakeLock = null;
   let captureHandle = null;
@@ -368,6 +370,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     if (!('wakeLock' in navigator)) { warnNoWakeLock(); return; }
     try {
       wakeLock = await navigator.wakeLock.request('screen');
+      if (stopping || destroyed) { wakeLock.release().catch(() => {}); wakeLock = null; return; }
       if (wakeLockWarning) setRecordingStatus();
       wakeLock.addEventListener('release', () => { if (running) warnNoWakeLock(); });
     } catch {
@@ -387,15 +390,20 @@ export function renderMeeting(root, { settings, onEvent }) {
   // `audioContext` was created in the tap that started this; see capture.js.
   async function startRecording(audioContext) {
     let handle;
+    let discarded = false;
     try {
-      handle = await startCapture({ onSegment: (seg) => session.segment(seg), audioContext });
+      handle = await startCapture({ onSegment: (seg) => { if (!discarded) session.segment(seg); }, audioContext });
     } catch (err) {
-      if (destroyed) return;
+      if (destroyed || stopping) return;
       setStatus(err?.message || String(err), 'error');
       (captureLost ? resumeBtn : startBtn).hidden = false;
       return;
     }
-    if (destroyed || finishedAt) { handle.stop().catch(() => {}); return; }
+    if (!mayInstallCapture({ destroyed, stopping, finishedAt })) {
+      discarded = true;
+      handle.stop().catch(() => {});
+      return;
+    }
     captureHandle = handle;
     captureHandle.pause(paused);
     for (const track of handle.stream.getAudioTracks()) track.addEventListener('ended', onCaptureChange);
@@ -408,7 +416,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     stopBtn.disabled = false;
     setRecordingStatus();
     await requestWakeLock();
-    if (!paused) await setupLive(captureHandle.stream.getAudioTracks()[0]);
+    if (!paused && !stopping) await setupLive(captureHandle.stream.getAudioTracks()[0]);
   }
 
   async function init(audioContext) {
@@ -531,7 +539,9 @@ export function renderMeeting(root, { settings, onEvent }) {
   });
 
   stopBtn.addEventListener('click', async () => {
+    stopping = true;
     running = false;
+    resumeBtn.hidden = true;
     talkBtn.disabled = true;
     pauseBtn.disabled = true;
     stopBtn.disabled = true;
@@ -569,6 +579,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     restored = [];
     session = null;
     finishedAt = null;
+    stopping = false;
     talkBtn.setAttribute('aria-pressed', 'false');
     talkBtn.classList.remove('on');
     pauseBtn.textContent = 'Pausar';

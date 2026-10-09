@@ -60,3 +60,10 @@ export function withTranslations(entries, cache) {
     return entry;
   });
 }
+
+// A capture finishes opening asynchronously (permission prompt, context resume);
+// by then «Terminar» may already have run, and a microphone that arrives after
+// it must be released, not installed.
+export function mayInstallCapture({ destroyed, stopping, finishedAt }) {
+  return !destroyed && !stopping && !finishedAt;
+}
