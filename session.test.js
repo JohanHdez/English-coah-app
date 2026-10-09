@@ -495,3 +495,153 @@ test('a session whose Groq backs up says so through a status event', async () =>
   await session.drain();
   assert.deepEqual(events.filter((e) => e.type === 'status').map((e) => e.text), [LATE_STATUS, '']);
 });
+
+// Phase 2, Task 2: the upload no longer waits for the voice print.
+test('a segment costs the slower of embed and transcribe, not their sum', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const embed = async (audio) => { await sleep(80); return audio[0] > 0 ? ME_LIKE : THEM_LIKE; };
+  const session = createSession({ embed, transcribe: fakeTranscribe([{ delay: 80 }]), speakers, onEvent });
+  const t0 = performance.now();
+  session.segment(seg('me', 0));
+  await session.drain();
+  const took = performance.now() - t0;
+  assert.equal(bubbles(events).length, 1);
+  assert.ok(took >= 78 && took < 140, `took ${took.toFixed(0)} ms; in series it would be 160`);
+});
+
+test('the upload starts before the embedding has finished', async () => {
+  const speakers = createSpeakers(ME_LIKE);
+  const gate = deferred();
+  let uploaded = 0;
+  const embed = async (audio) => { await gate.promise; return audio[0] > 0 ? ME_LIKE : THEM_LIKE; };
+  const transcribe = async () => { uploaded++; return { text: 'Hello there.', lang: 'en' }; };
+  const session = createSession({ embed, transcribe, speakers, onEvent: () => {} });
+  session.segment(seg('me', 0));
+  await sleep(1);
+  assert.equal(uploaded, 1);
+  gate.resolve();
+  await session.drain();
+});
+
+test('a slow label on the first segment still paints it before a quick second one', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  let calls = 0;
+  const embed = async (audio) => { if (calls++ === 0) await sleep(40); return audio[0] > 0 ? ME_LIKE : THEM_LIKE; };
+  const session = createSession({ embed, transcribe: fakeTranscribe([{ delay: 1 }, { delay: 1 }]), speakers, onEvent });
+  session.segment(seg('me', 0));
+  session.segment(seg('them', 1000));
+  await session.drain();
+  assert.deepEqual(bubbles(events).map((e) => e.entry.speaker), ['me', 'them']);
+});
+
+// Same 4.5 s switch-midway audio as the 5b tests: the whole segment's upload is
+// asked for first, then each part's, and only the parts may reach a bubble.
+function splitAudio() {
+  const audio = new Float32Array(72000).fill(0.5);
+  audio.fill(-0.5, 24000);
+  return audio;
+}
+
+test('a split replaces a whole-segment upload that already finished, and says so', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const embed = async (audio) => { await sleep(5); return audio[0] > 0 ? ME_LIKE : THEM_LIKE; };
+  const transcribe = async (audio) => ({ text: audio.length === 72000 ? 'Whole segment.' : `Part of ${audio.length}.`, lang: 'en' });
+  const session = createSession({ embed, transcribe, speakers, onEvent });
+  session.segment({ audio: splitAudio(), startedAt: 0, durationMs: 4500, open: false });
+  await session.drain();
+  const texts = session.transcript().map((e) => e.text);
+  assert.deepEqual(texts, ['Part of 24000.', 'Part of 48000.']);
+  assert.equal(events.find((e) => e.type === 'labelled').replaced, 'done');
+});
+
+test('a split aborts a whole-segment upload still in flight', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  let wholeSignal = null;
+  const transcribe = (audio, signal) => {
+    if (audio.length !== 72000) return Promise.resolve({ text: 'Part.', lang: 'en' });
+    wholeSignal = signal;
+    return new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+    });
+  };
+  const session = createSession({ embed: fakeEmbed, transcribe, speakers, onEvent });
+  session.segment({ audio: splitAudio(), startedAt: 0, durationMs: 4500, open: false });
+  await session.drain();
+  assert.ok(wholeSignal.aborted);
+  assert.equal(events.find((e) => e.type === 'labelled').replaced, 'inflight');
+  assert.equal(bubbles(events).length, 2);
+  assert.equal(events.filter((e) => e.type === 'error').length, 0);
+});
+
+test('a split withdraws a whole-segment upload still waiting, and its parts go first', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const hold = deferred();
+  const seen = [];
+  let calls = 0;
+  const transcribe = async (audio) => {
+    seen.push(audio.length);
+    if (calls++ < 2) await hold.promise;
+    return { text: 'Hello there.', lang: 'en' };
+  };
+  const embed = async (audio) => { await sleep(1); return audio[0] > 0 ? ME_LIKE : THEM_LIKE; };
+  const session = createSession({ embed, transcribe, speakers, onEvent });
+  session.segment(seg('them', 0, { sampleCount: 100 }));
+  session.segment(seg('them', 1000, { sampleCount: 101 }));
+  session.segment({ audio: splitAudio(), startedAt: 2000, durationMs: 4500, open: false });
+  session.segment(seg('me', 7000, { sampleCount: 102 }));
+  await sleep(40);
+  hold.resolve();
+  await session.drain();
+  assert.deepEqual(seen, [100, 101, 24000, 48000, 102], 'the whole 72000 never uploaded; its parts kept its place');
+  assert.equal(events.find((e) => e.type === 'labelled' && e.durationMs === 4500).replaced, 'waiting');
+});
+
+test('an embed failure aborts that upload, emits one error, and the next segment still paints', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  let calls = 0;
+  const embed = async (audio) => { if (calls++ === 0) throw new Error('[huella] boom'); return audio[0] > 0 ? ME_LIKE : THEM_LIKE; };
+  const signals = [];
+  const transcribe = (audio, signal) => { signals.push(signal); return new Promise((r) => setTimeout(() => r({ text: 'Hello there.', lang: 'en' }), 10)); };
+  const session = createSession({ embed, transcribe, speakers, onEvent });
+  session.segment(seg('me', 0));
+  session.segment(seg('them', 1000));
+  await session.drain();
+  assert.equal(events.filter((e) => e.type === 'error').length, 1);
+  assert.deepEqual(bubbles(events).map((e) => e.entry.speaker), ['them']);
+  assert.deepEqual(signals.map((s) => s.aborted), [true, false]);
+});
+
+test('an aborted waiting upload leaves the queue without running and frees its audio', async () => {
+  const q = createUploadQueue();
+  const hold = deferred();
+  q.enqueue(() => hold.promise, 1000);
+  q.enqueue(() => hold.promise, 1000);
+  const ctl = new AbortController();
+  let ran = false;
+  const parked = q.enqueue(async () => { ran = true; }, 5000, { signal: ctl.signal });
+  assert.equal(q.waitingMs(), 5000);
+  ctl.abort();
+  assert.deepEqual(await parked, { ok: false, dropped: true });
+  assert.equal(q.waitingMs(), 0);
+  hold.resolve();
+  await sleep(1);
+  assert.equal(ran, false);
+});
+
+test('an upload put in front runs before the ones already waiting', async () => {
+  const q = createUploadQueue({ maxInflight: 1 });
+  const hold = deferred();
+  const order = [];
+  q.enqueue(() => hold.promise);
+  const a = q.enqueue(async () => order.push('a'));
+  const b = q.enqueue(async () => order.push('b'), 0, { front: true });
+  hold.resolve();
+  await Promise.all([a, b]);
+  assert.deepEqual(order, ['b', 'a']);
+});

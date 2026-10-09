@@ -42,7 +42,9 @@ export const LATE_STATUS = 'Groq va con retraso…';
 
 // At most `maxInflight` uploads at once; the rest wait in arrival order. Every
 // enqueue resolves (never rejects) with { ok, value } | { ok: false, error } |
-// { ok: false, dropped: true } (closed before it started).
+// { ok: false, dropped: true } (closed, or `signal` aborted, before it started).
+// `front` puts the item ahead of everything waiting: the parts of a split segment
+// replace an upload that already held an earlier place in line.
 export function createUploadQueue({ maxInflight = MAX_INFLIGHT, capMs = CAP_MS, lateMs = LATE_MS, onLate = () => {}, onDrop = () => {} } = {}) {
   let active = 0;
   let waitingMs = 0;
@@ -58,6 +60,7 @@ export function createUploadQueue({ maxInflight = MAX_INFLIGHT, capMs = CAP_MS, 
 
   function start(item) {
     active++;
+    item.started = true;
     item.fn().then(
       (value) => settle(item, { ok: true, value }),
       (error) => settle(item, { ok: false, error }),
@@ -75,12 +78,23 @@ export function createUploadQueue({ maxInflight = MAX_INFLIGHT, capMs = CAP_MS, 
     if (waitingMs < lateMs) setLate(false);
   }
 
-  function enqueue(fn, audioMs = 0) {
+  function withdraw(item) {
+    const i = waiting.indexOf(item);
+    if (i < 0) return;
+    waiting.splice(i, 1);
+    waitingMs -= item.audioMs;
+    item.resolve({ ok: false, dropped: true });
+    if (waitingMs < lateMs) setLate(false);
+  }
+
+  function enqueue(fn, audioMs = 0, { signal, front = false } = {}) {
     return new Promise((resolve) => {
-      const item = { fn, audioMs, resolve };
-      if (closed) { resolve({ ok: false, dropped: true }); return; }
+      const item = { fn, audioMs, resolve, started: false };
+      if (closed || signal?.aborted) { resolve({ ok: false, dropped: true }); return; }
       if (active < maxInflight) { start(item); return; }
-      waiting.push(item);
+      signal?.addEventListener('abort', () => { if (!item.started) withdraw(item); }, { once: true });
+      if (front) waiting.unshift(item);
+      else waiting.push(item);
       waitingMs += audioMs;
       while (waitingMs > capMs && waiting.length > 1) {
         const oldest = waiting.shift();
@@ -137,8 +151,8 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
   // bare `.then` chain turns one rejection into a permanently rejected chain,
   // silently dropping every segment queued after it.
   let labelChain = Promise.resolve();
-  // Bubbles are painted in this same order, independent of how fast each
-  // transcription actually comes back (see withLimit below).
+  // Bubbles are painted in capture order, independent of how fast each
+  // transcription or label actually comes back.
   let emitChain = Promise.resolve();
 
   // Chains `task` onto emitChain so it still runs after every previously
@@ -158,6 +172,26 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
   const uploads = createUploadQueue({
     onLate: (late) => safeEmit({ type: 'status', text: late ? LATE_STATUS : '' }),
   });
+
+  // One upload with its own abort: a 5b split replaces it with its parts, and
+  // close() stops it with everything else. `state()` is what a cancel wasted:
+  // nothing while 'waiting', part of a request while 'inflight', all of it once
+  // 'done'.
+  function upload({ audio, durationMs }, front = false) {
+    const ctl = new AbortController();
+    const cancel = () => ctl.abort();
+    aborter.signal.addEventListener('abort', cancel, { once: true });
+    let state = 'waiting';
+    const outcome = uploads.enqueue(() => {
+      state = 'inflight';
+      return transcribe(audio, ctl.signal);
+    }, durationMs, { signal: ctl.signal, front });
+    outcome.then(() => {
+      if (state === 'inflight') state = 'done';
+      aborter.signal.removeEventListener('abort', cancel);
+    });
+    return { outcome, cancel, state: () => state };
+  }
 
   function labelUnit(id, vector, manualSpeaker) {
     if (manualSpeaker) {
@@ -190,30 +224,40 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
     for (const e of painted) safeEmit({ type: 'bubble', entry: e });
   }
 
-  // One audio stretch through embed -> classify/assign -> transcribe -> fold.
+  // Labels one audio stretch (embed -> classify/assign) on the label chain.
   // `manualSpeaker` is the mode in force when the *segment* was captured (see
   // segment() below), not whenever this async chain happens to reach it.
   // `vector`, when present, is the mean of the scan's windows over this very
   // audio: embedding it again would cost as much as the scan saved.
-  async function labelAndDispatch({ audio, startedAt, durationMs, vector: known }, manualSpeaker) {
+  async function labelPart(unit, manualSpeaker) {
     const id = nextId();
-    let speaker;
     try {
-      const vector = known || await embed(audio);
-      speaker = labelUnit(id, vector, manualSpeaker);
+      const vector = unit.part.vector || await embed(unit.part.audio);
+      unit.speaker = labelUnit(id, vector, manualSpeaker);
+      unit.id = id;
     } catch (err) {
-      queueEmit(() => { throw err; });
-      return;
+      unit.upload.cancel();
+      unit.error = err;
     }
-    const transcribed = uploads.enqueue(() => transcribe(audio, aborter.signal), durationMs);
-    queueEmit(async () => {
-      const outcome = await transcribed;
-      if (outcome.dropped || closed) return;
-      if (!outcome.ok) throw outcome.error;
-      const result = outcome.value;
-      if (isJunk(result.text)) return;
-      foldAndEmit(speaker, result.text, startedAt, durationMs, result.lang, id);
-    });
+    unit.done();
+  }
+
+  function unitOf(part, existing) {
+    const unit = { part, upload: existing };
+    unit.labelled = new Promise((resolve) => { unit.done = resolve; });
+    return unit;
+  }
+
+  async function emitUnit(unit) {
+    await unit.labelled;
+    if (unit.error) throw unit.error;
+    const outcome = await unit.upload.outcome;
+    if (outcome.dropped || closed) return;
+    if (!outcome.ok) throw outcome.error;
+    const result = outcome.value;
+    if (isJunk(result.text)) return;
+    const { startedAt, durationMs } = unit.part;
+    foldAndEmit(unit.speaker, result.text, startedAt, durationMs, result.lang, unit.id);
   }
 
   // Groups consecutive equal labels; `startIdx` is the index into `labels`
@@ -280,6 +324,9 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
     ];
   }
 
+  // The whole segment's upload starts at once, beside its label: the bubble waits
+  // for the slower of the two instead of their sum. If the window scan then
+  // splits the segment, the parts' uploads replace it.
   function segment(seg) {
     // Manual mode is a real-time toggle: the speaker in force while this audio
     // was actually captured must stick with it, not whatever is on by the time
@@ -288,20 +335,48 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
     if (closed) return;
     queuedEmbedMs += seg.durationMs;
     const handedAt = now();
+    const whole = upload(seg);
+    let resolveUnits;
+    const units = new Promise((resolve) => { resolveUnits = resolve; });
     labelChain = labelChain.then(async () => {
       queuedEmbedMs -= seg.durationMs;
-      if (closed) return;
+      if (closed) { resolveUnits([]); return; }
       const t0 = now();
       const backlogMs = (t0 - handedAt) + queuedEmbedMs;
       const scan = shouldScan(seg.durationMs, backlogMs);
+      let list;
+      let replaced = null;
       try {
         const parts = scan ? await splitIfNeeded(seg) : [seg];
-        for (const part of parts) await labelAndDispatch(part, manualAtCapture);
+        if (parts.length > 1) {
+          replaced = whole.state();
+          whole.cancel();
+          list = parts.map((part) => unitOf(part));
+          // Reversed so that, put in front one by one, the first part leads.
+          for (const unit of [...list].reverse()) unit.upload = upload(unit.part, true);
+        } else {
+          list = [unitOf(parts[0], whole)];
+        }
       } catch (err) {
-        queueEmit(() => { throw err; });
+        whole.cancel();
+        list = [{ error: err }];
       }
+      // Each part paints as soon as its own label and upload are both in.
+      resolveUnits(list);
+      for (const unit of list) if (!unit.error) await labelPart(unit, manualAtCapture);
       // Measurement only (the harness records it); the screen ignores it.
-      safeEmit({ type: 'labelled', durationMs: seg.durationMs, embedMs: now() - t0, backlogMs, scanned: scan });
+      // `replaced` is how far the whole-segment upload had got when a split
+      // replaced it ('done' is a wasted request), null when nothing split.
+      safeEmit({ type: 'labelled', durationMs: seg.durationMs, embedMs: now() - t0, backlogMs, scanned: scan, replaced });
+    });
+    queueEmit(async () => {
+      for (const unit of await units) {
+        try {
+          await emitUnit(unit);
+        } catch (err) {
+          if (!closed) emitError(err);
+        }
+      }
     });
   }
 
@@ -319,9 +394,9 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
   }
 
   // Resolves once every segment handed to segment() so far has been embedded,
-  // labelled, transcribed and painted (or has failed into an error event) — in
-  // that order, since emitChain only grows from inside labelChain's own
-  // callbacks. A caller that wants a clean "every pending bubble has landed"
+  // labelled, transcribed and painted (or has failed into an error event):
+  // segment() grows both chains synchronously, and each emission awaits its own
+  // label. A caller that wants a clean "every pending bubble has landed"
   // point (ui/meeting.js's "Terminar", after capture.js's stop() has
   // synchronously flushed the last phrase into one more segment()) awaits this
   // before treating the session as finished.

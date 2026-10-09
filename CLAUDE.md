@@ -162,6 +162,12 @@ pipeline's labels and timing, never Whisper's accuracy.
 - **Open decision:** the spec's Phase 1 criterion "< 10 % mixed segments" is not met. After the
   split, 12–24 % of transcription requests still hold both voices (`audio-mixed requests` in
   `e2e/run.mjs`). Not tuned further; accepting it or working on the cut is the owner's call.
+- Each segment's upload starts beside its voice print (Phase 2, Task 2), so a 5b split usually
+  arrives after the whole segment's transcription has finished: measured 2026-10-09, every split
+  (3 of 3, normal and `--throttle=4`) re-uploaded its parts, 21 requests where 18 did before —
+  one wasted Groq request per split, which counts against the free tier's per-minute cap. The
+  replaced uploads also appear in `e2e/run.mjs`'s `stand-in requests` (as never reaching a
+  bubble) and `audio-mixed requests`. The `labelled` event's `replaced` field records each one.
 - The phone CPU cost is emulated (`--throttle=4`), not measured; the scan skip under a backlog
   (`BACKLOG_SKIP_MS` in `session.js`) saves little, because a whole long segment costs about as
   much to embed as its windows.
