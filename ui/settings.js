@@ -180,7 +180,7 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
   section.append(translateLabel);
 
   // --- Coach: profile, today's context, phrases ---------------------------------
-  section.append(profileFields(settings));
+  section.append(profileFields(settings, (text) => setNotice(text)));
 
   const phrasesFieldset = document.createElement('fieldset');
   phrasesFieldset.className = 'field';

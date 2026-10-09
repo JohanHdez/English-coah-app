@@ -156,6 +156,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     settings,
     getTurns: () => [...restored, ...(session ? session.transcript() : [])],
     onToast: flashToast,
+    onLayout: () => { if (atBottom) stickToBottom(); },
     onBusy: (busy) => { replyBtn.disabled = busy; replyBtn.classList.toggle('busy', busy); },
   });
   section.insertBefore(coach.el, transcriptEl);
@@ -555,6 +556,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   });
 
   stopBtn.addEventListener('click', async () => {
+    coach.reset();
     stopping = true;
     captureEpoch++;
     running = false;
@@ -589,6 +591,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   });
 
   newMeetingBtn.addEventListener('click', async () => {
+    coach.reset();
     const audioContext = createAudioContext();
     newMeetingBtn.hidden = true;
     transcriptEl.textContent = '';

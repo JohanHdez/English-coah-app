@@ -405,6 +405,15 @@ test('an error body that echoes any key is redacted, whatever the key looks like
   }
 });
 
+test('a coach network failure is plain Spanish without the browser\'s message', async () => {
+  const { restore } = stubFetch(() => { throw new TypeError(`Failed to fetch ${KEYS.groq}`); });
+  try {
+    await assert.rejects(() => callChat(settingsFor('groq'), { system: 's', user: 'u', sleep: noWait }), /^Error: \[coach\] Sin conexión con Groq\. Revisa tu red y vuelve a intentarlo\.$/);
+  } finally {
+    restore();
+  }
+});
+
 test('a network failure that names the key is redacted too', async () => {
   const { restore } = stubFetch(() => { throw new TypeError(`Failed to fetch ${KEYS.gemini}`); });
   try {

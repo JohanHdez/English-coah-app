@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   richParts, plainReply, addCustomPhrase, removeCustomPhrase, deleteNote,
-  categoryActive, setCategoryActive, replyTurns, clampField, CUSTOM_PHRASE_MAX,
+  categoryActive, setCategoryActive, replyTurns, clampField, saveFailureText, CUSTOM_PHRASE_MAX,
 } from './coachdata.js';
 import { resolvePhrases, MAX_CUSTOM, DEFAULT_PHRASE_IDS } from './lib/phrasebook.js';
 
@@ -77,4 +77,10 @@ test('replyTurns puts restored turns first and drops blank text', () => {
 test('clampField cuts to the limit', () => {
   assert.equal(clampField('abcdef', 3), 'abc');
   assert.equal(clampField(undefined, 3), '');
+});
+
+test('saveFailureText names what was not saved, staged [almacenamiento]', () => {
+  assert.equal(saveFailureText('note'), '[almacenamiento] No se pudo guardar la nota.');
+  assert.equal(saveFailureText('profile'), '[almacenamiento] No se pudo guardar tu perfil.');
+  assert.equal(saveFailureText('other'), '[almacenamiento] No se pudo guardar el cambio.');
 });

@@ -13,7 +13,7 @@ import {
 } from '../lib/phrasebook.js';
 import {
   richParts, plainReply, addCustomPhrase, removeCustomPhrase, deleteNote,
-  replyTurns, clampField, CUSTOM_PHRASE_MAX,
+  replyTurns, clampField, saveFailureText, CUSTOM_PHRASE_MAX,
 } from '../coachdata.js';
 
 function el(tag, className, text) {
@@ -36,7 +36,7 @@ async function save(settings) {
 
 // A textarea with a live character counter that writes the setting as the learner
 // types: the profile and the context are used by the very next «Respuesta».
-export function limitedField({ label, hint, max, value, onInput, rows = 4 }) {
+export function limitedField({ label, hint, max, value, read, onInput, rows = 4 }) {
   const wrap = el('label', 'field');
   wrap.append(el('span', '', label));
   const area = el('textarea');
@@ -47,6 +47,11 @@ export function limitedField({ label, hint, max, value, onInput, rows = 4 }) {
   const count = el('span', 'hint counter');
   const refresh = () => { count.textContent = `${area.value.length} / ${max}`; };
   area.addEventListener('input', () => { refresh(); onInput(area.value); });
+  // Ajustes may have edited the same setting while this field sat open.
+  area.addEventListener('focus', () => {
+    const current = clampField(read(), max);
+    if (current !== area.value) { area.value = current; refresh(); }
+  });
   refresh();
   wrap.append(area);
   if (hint) wrap.append(el('span', 'hint', hint));
@@ -54,25 +59,31 @@ export function limitedField({ label, hint, max, value, onInput, rows = 4 }) {
   return wrap;
 }
 
-export function profileFields(settings) {
-  const write = (key) => (value) => { settings[key] = clampField(value, key === 'profile' ? PROFILE_MAX_CHARS : CONTEXT_MAX_CHARS); save(settings).catch(() => {}); };
+export function profileFields(settings, onError = () => {}) {
+  const timers = {};
+  const write = (key, kind) => (value) => {
+    settings[key] = clampField(value, key === 'profile' ? PROFILE_MAX_CHARS : CONTEXT_MAX_CHARS);
+    // One put per pause, not per keystroke; the in-memory value is already current.
+    clearTimeout(timers[key]);
+    timers[key] = setTimeout(() => save(settings).catch(() => onError(saveFailureText(kind))), 300);
+  };
   const box = el('div', 'profile-fields');
   box.append(
     limitedField({
       label: 'Tu perfil',
       hint: 'Tu experiencia real: el coach solo usa estos datos para hablar de ti.',
-      max: PROFILE_MAX_CHARS, value: settings.profile, onInput: write('profile'),
+      max: PROFILE_MAX_CHARS, value: settings.profile, read: () => settings.profile, onInput: write('profile', 'profile'),
     }),
     limitedField({
       label: 'Contexto de hoy',
       hint: 'De qué va esta reunión: temas, nombres, lo que quieres lograr.',
-      max: CONTEXT_MAX_CHARS, value: settings.sessionContext, onInput: write('sessionContext'),
+      max: CONTEXT_MAX_CHARS, value: settings.sessionContext, read: () => settings.sessionContext, onInput: write('sessionContext', 'context'),
     }),
   );
   return box;
 }
 
-export function createCoachPanel({ settings, getTurns, onToast, onBusy }) {
+export function createCoachPanel({ settings, getTurns, onToast, onBusy, onLayout = () => {} }) {
   const root = el('div', 'coach-panel');
 
   const tabs = el('div', 'coach-tabs');
@@ -88,17 +99,20 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy }) {
   let active = null; // null while collapsed
   let category = null;
   let controller = null;
+  let epoch = 0;
+  let built = false;
   let destroyed = false;
 
-  async function commit(next) {
+  async function commit(next, kind) {
     Object.assign(settings, next);
-    await save(settings).catch(() => {});
+    await save(settings).catch(() => onToast(saveFailureText(kind)));
   }
 
   async function copy(text, node) {
     try {
       await navigator.clipboard.writeText(text);
       node?.classList.add('copied');
+      setTimeout(() => node?.classList.remove('copied'), 1200);
       onToast('Copiado');
     } catch {
       onToast('No se pudo copiar');
@@ -129,7 +143,7 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy }) {
       if (phrase.es) chip.append(el('i', '', phrase.es));
       item.append(chip);
       if (category === CUSTOM_CAT) {
-        const del = button('icon-delete', '×', async () => { await commit(removeCustomPhrase(settings, phrase.id)); renderBody(); });
+        const del = button('icon-delete', '×', async () => { await commit(removeCustomPhrase(settings, phrase.id), 'phrase'); renderBody(); });
         del.setAttribute('aria-label', `Borrar la frase ${phrase.en}`);
         item.append(del);
       }
@@ -159,7 +173,7 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy }) {
       form.addEventListener('submit', async (e) => {
         e.preventDefault();
         if (!en.value.trim()) return;
-        await commit(addCustomPhrase(settings, { en: en.value, es: es.value }));
+        await commit(addCustomPhrase(settings, { en: en.value, es: es.value }), 'phrase');
         renderBody();
       });
       view.append(form);
@@ -176,14 +190,14 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy }) {
     for (const note of notes) {
       const item = el('div', 'note' + (note.open ? ' open' : ''));
       const head = button('note-head', note.title || note.body.slice(0, NOTE_TITLE_MAX), async () => {
-        await commit(toggleNoteOpen(settings, note.id));
+        await commit(toggleNoteOpen(settings, note.id), 'note');
         renderBody();
       });
       head.setAttribute('aria-expanded', String(note.open));
       item.append(head);
       if (note.open) {
         item.append(el('p', 'note-text', note.body || note.title));
-        const del = button('note-delete', 'Borrar nota', async () => { await commit(deleteNote(settings, note.id)); renderBody(); });
+        const del = button('note-delete', 'Borrar nota', async () => { await commit(deleteNote(settings, note.id), 'note'); renderBody(); });
         item.append(del);
       }
       view.append(item);
@@ -209,7 +223,7 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy }) {
       e.preventDefault();
       const next = addNote(settings, { title: title.value, body: text.value });
       if (next === settings) return;
-      await commit(next);
+      await commit(next, 'note');
       renderBody();
     });
     view.append(form);
@@ -229,7 +243,8 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy }) {
     refreshCounts();
     if (active === 'phrases') body.append(phrasesView());
     else if (active === 'notes') body.append(notesView());
-    else if (active === 'context') body.append(profileFields(settings));
+    else if (active === 'context') body.append(profileFields(settings, onToast));
+    if (built) onLayout();
   }
 
   function refreshCounts() {
@@ -245,6 +260,7 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy }) {
     tabs.append(b);
   }
   renderBody();
+  built = true;
 
   // --- Respuesta ------------------------------------------------------------
   function group(title, items, rich) {
@@ -291,6 +307,7 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy }) {
       if (answer.length) reply.append(group('Di esto', answer, true));
       if (ideas.length) reply.append(group('Para estudiar', ideas, false));
     }
+    onLayout();
   }
 
   function closeReply() {
@@ -310,13 +327,14 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy }) {
     }
     controller = new AbortController();
     const mine = controller;
+    const asked = epoch;
     onBusy(true);
     showReply({ pending: true });
     try {
       const result = await askReply({ turns, settings, signal: mine.signal });
-      if (!mine.signal.aborted && !destroyed) showReply(result);
+      if (!mine.signal.aborted && !destroyed && asked === epoch) showReply(result);
     } catch (err) {
-      if (!mine.signal.aborted && !destroyed) showReply({ error: err?.message || String(err) });
+      if (!mine.signal.aborted && !destroyed && asked === epoch) showReply({ error: err?.message || String(err) });
     } finally {
       if (controller === mine) { controller = null; onBusy(false); }
     }
@@ -325,6 +343,10 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy }) {
   return {
     el: root,
     ask,
+    reset() {
+      epoch++;
+      closeReply();
+    },
     destroy() { destroyed = true; controller?.abort(); },
   };
 }

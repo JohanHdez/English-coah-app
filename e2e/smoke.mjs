@@ -393,7 +393,18 @@ async function main() {
     await setGroqKey(FAKE_KEY);
     console.log(`coach: with no key, «Respuesta» says "${keyError}"`);
 
+    // A «Respuesta» still waiting when «Terminar» and «Nueva reunión» run must not paint
+    // into the next meeting: the stand-in is slowed so the request outlives both taps.
+    await mock.setChatDelay(1500);
+    await tap(chrome, session, '.meeting .reply-btn');
+    await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-reply .reply-status')?.textContent === 'Pensando…'"), { label: '«Pensando…» before the new meeting' });
     await tap(chrome, session, '.meeting .new-meeting');
+    await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-reply').hidden && !document.querySelector('.meeting .reply-btn').disabled"), { label: 'the panel reset by «Nueva reunión»' });
+    await sleep(2000);
+    const leaked = await chrome.evaluate(session, "!document.querySelector('.coach-reply').hidden || document.querySelector('.coach-reply').textContent !== ''");
+    await mock.setChatDelay(null);
+    if (leaked) throw new Error('[smoke] a reply from the previous meeting painted into the next one');
+    console.log('coach: a «Respuesta» in flight when «Nueva reunión» ran was dropped; nothing painted into the new meeting');
     await waitFor(
       () => chrome.evaluate(session, "document.querySelector('.meeting .talk-toggle')?.disabled === false"),
       { timeoutMs: 60000, label: 'the new meeting to record' },

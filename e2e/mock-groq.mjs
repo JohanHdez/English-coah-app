@@ -143,6 +143,7 @@ function chatReply(provider, userText) {
 export async function startMockGroq({ manifest, delayMs = 900, wav = null }) {
   const requests = [];
   const chats = [];
+  let chatDelay = null;
   let t0 = Date.now();
   const whole = wav ? envelope(wav, 44) : null;
 
@@ -170,7 +171,7 @@ export async function startMockGroq({ manifest, delayMs = 900, wav = null }) {
           const user = shape.provider === 'gemini' ? parts.map((p) => p.text || '').join('')
             : (json.messages || []).filter((m) => m.role === 'user').map((m) => m.content).join('\n');
           chats.push({ n: chats.length + 1, at: Date.now(), provider: shape.provider, auth: shape.auth, model: json.model ?? req.url.split('/').pop().split(':')[0], chars: user.length, user });
-          await sleep(Math.round(delayMs / 3));
+          await sleep(chatDelay ?? Math.round(delayMs / 3));
           res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' });
           res.end(JSON.stringify(chatReply(shape.provider, user)));
           return;
@@ -245,6 +246,7 @@ export async function startMockGroq({ manifest, delayMs = 900, wav = null }) {
     url: `http://127.0.0.1:${port}`,
     requests,
     chats,
+    setChatDelay: (ms) => { chatDelay = ms; },
     reset: () => { requests.length = 0; chats.length = 0; },
     // The page's clock and this process's are the same wall clock.
     setT0: (ms) => { t0 = ms; },

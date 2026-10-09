@@ -406,7 +406,9 @@ async function send({ id, key, build, stage, signal, sleep = waitFor, retries = 
       res = await fetch(url, { ...init, headers: { ...init.headers, ...authHeaders(id, key) }, signal: withTimeout(signal, timeoutMs) });
     } catch (err) {
       if (signal?.aborted) throw abortError(signal);
-      failure = new Error(`${stage} No se pudo contactar con ${label}: ${redact(err?.message || String(err), keys)}`);
+      failure = stage === '[coach]'
+        ? new Error(`${stage} Sin conexión con ${label}. Revisa tu red y vuelve a intentarlo.`)
+        : new Error(`${stage} No se pudo contactar con ${label}: ${redact(err?.message || String(err), keys)}`);
     }
     if (!failure && !res.ok) {
       const body = await res.text().catch(() => '');

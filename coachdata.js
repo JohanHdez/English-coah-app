@@ -69,3 +69,11 @@ export function replyTurns(restored = [], live = []) {
 export function clampField(value, max) {
   return String(value ?? '').slice(0, max);
 }
+
+const SAVE_WHAT = { note: 'la nota', phrase: 'la frase', profile: 'tu perfil', context: 'el contexto' };
+
+// A failed storage write keeps the change in memory, so the meeting still uses it;
+// the learner is told it will not survive a reload.
+export function saveFailureText(kind) {
+  return `[almacenamiento] No se pudo guardar ${SAVE_WHAT[kind] || 'el cambio'}.`;
+}
