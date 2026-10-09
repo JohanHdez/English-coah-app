@@ -57,7 +57,7 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 
 | Path | Responsibility | Task |
 |---|---|---|
-| `lib/segmenter.js` `lib/stitch.js` `lib/queue.js` `lib/langid.js` `lib/live.js` + tests | Copied from the extension, unchanged except import paths | 1 |
+| `lib/segmenter.js` `lib/stitch.js` `lib/queue.js` `lib/langid.js` `lib/live.js` + tests | Copied from the extension, unchanged except import paths (and `lib/live.js`'s result joining, see `docs/ORIGIN.md`) | 1 |
 | `vendor/` | transformers.js + ONNX Runtime Web, copied | 1 |
 | `recorder-worklet.js` | Copied: 100 ms blocks with RMS | 1 |
 | `tools/serve.mjs` | Local static server (localhost is a secure context, so the mic works) | 1 |
@@ -121,6 +121,7 @@ node e2e/run.mjs Paulina Samantha --transcribe=gemini --chat=anthropic   # anoth
 node e2e/run.mjs Paulina Samantha --live=speech    # live line: on-device pack installed into e2e/.profile first
 node e2e/run.mjs Paulina Samantha --live=preview   # live line: Web Speech hidden, local Whisper lane (WebGPU)
 node e2e/run.mjs Paulina Samantha --live=none      # Web Speech hidden, lane off: the baseline for its cost
+node e2e/run.mjs Paulina Samantha --live=preview --mobile   # a phone (client hints): the lane must not start
 ```
 
 `e2e/speakers.mjs` builds any missing fixture, serves the repo in-process, opens
@@ -173,7 +174,9 @@ pipeline's labels and timing, never Whisper's accuracy.
 - The live line: where Chrome's on-device pack is `downloadable` the meeting offers «Instalar
   reconocimiento de voz»; where recognition is missing, a device with WebGPU runs
   `onnx-community/whisper-tiny.en` (q4 decoder, fp32 encoder: about 120 MB on first use, from
-  Hugging Face) as a preview lane, on by default. Measured on 2026-10-09 (this Mac's GPU, not a
+  Hugging Face) as a preview lane: on by default on a desktop, off on a phone or tablet until the
+  learner turns it on in Ajustes (`livePreview` unset follows `isMobile()` in `live-lane.js`;
+  `node e2e/run.mjs … --live=preview --mobile` fails if a phone starts it). Measured on 2026-10-09 (this Mac's GPU, not a
   phone's): live text p50 1.05 s after onset, no measurable bubble-latency cost. A phone's GPU may
   trip the slowness rule (two passes over 1.5 s in a row) and retire it, which the screen says.
   Bilingual meetings get no live line. Web Speech itself went silent for 3 s at one speaker change

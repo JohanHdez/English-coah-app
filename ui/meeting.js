@@ -14,7 +14,7 @@ import { startCapture, createAudioContext } from '../capture.js';
 import { transcribe } from '../transcribe.js';
 import { toSpanish } from '../translate.js';
 import { liveAvailability, installLive, startLive } from '../lib/live.js';
-import { liveMode, createPreviewLane, NOTES } from '../live-lane.js';
+import { liveMode, createPreviewLane, NOTES, isMobile, deviceFacts, previewEnabled } from '../live-lane.js';
 import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations, mayInstallCapture } from '../bubbles.js';
 import { MODEL_ID } from '../embed.js';
 import * as store from '../store.js';
@@ -311,6 +311,10 @@ export function renderMeeting(root, { settings, onEvent }) {
   let liveAvailable = false;
   let liveToken = 0;
   let installing = false;
+  // Retired for the rest of this meeting: a lane rebuilt after a pause would be
+  // just as slow on the same device.
+  let previewRetired = false;
+  const mobile = isMobile(deviceFacts(globalThis));
 
   function setLiveText(text) {
     liveTextEl.textContent = text;
@@ -373,9 +377,11 @@ export function renderMeeting(root, { settings, onEvent }) {
   // was measured ready 7.3 s in, the first three sentences blank.
   async function preloadPreview() {
     const lang = liveLangFor(settings.lang);
-    if (settings.livePreview === false || !lang) return;
+    if (!previewEnabled(settings.livePreview, mobile) || previewRetired || !lang) return;
     const availability = await liveAvailability(lang);
-    if (destroyed || liveMode({ lang, availability, webgpu: await hasWebGPU(), preview: true }).kind !== 'preview') return;
+    const webgpu = await hasWebGPU();
+    if (destroyed || stopping || finishedAt || previewRetired) return;
+    if (liveMode({ lang, availability, webgpu, preview: settings.livePreview, mobile }).kind !== 'preview') return;
     loadPreview();
   }
 
@@ -389,8 +395,8 @@ export function renderMeeting(root, { settings, onEvent }) {
     // from a quick pause/resume) already moved on; the token guards against
     // starting a recogniser nobody asked for any more.
     if (destroyed || paused || !running || token !== liveToken) return;
-    const mode = liveMode({ lang, availability, webgpu, preview: settings.livePreview !== false });
-    onEvent?.({ type: 'live-mode', kind: mode.kind, availability });
+    const mode = liveMode({ lang, availability, webgpu, preview: settings.livePreview, mobile });
+    onEvent?.({ type: 'live-mode', kind: mode.kind, availability, mobile });
     if (mode.kind === 'speech') {
       setLiveNote('');
       liveAvailable = true;
@@ -402,6 +408,8 @@ export function renderMeeting(root, { settings, onEvent }) {
       });
     } else if (mode.kind === 'install') {
       setLiveNote(installing ? NOTES.installing : mode.note, { install: !installing });
+    } else if (mode.kind === 'preview' && previewRetired) {
+      setLiveNote(NOTES.retired);
     } else if (mode.kind === 'preview') {
       setLiveNote(NOTES.loading);
       let device;
@@ -418,6 +426,9 @@ export function renderMeeting(root, { settings, onEvent }) {
         onText: setLiveText,
         onRetire: () => {
           liveAvailable = false;
+          previewRetired = true;
+          previewLane = null;
+          dropPreviewWorker();
           setLiveNote(NOTES.retired);
           onEvent?.({ type: 'live-mode', kind: 'retired' });
         },
@@ -566,7 +577,9 @@ export function renderMeeting(root, { settings, onEvent }) {
           session.segment(seg);
         },
         onPreview: (seg) => previewLane?.offer(seg),
-        canPreview: () => !!previewLane && previewLane.canPreview(),
+        // The worker runs one pass at a time: a lane rebuilt by pause/resume must not
+        // post a second pass while the old lane's is still in the worker.
+        canPreview: () => !!previewLane && previewLane.canPreview() && previewPending.size === 0,
         audioContext,
       });
     } catch (err) {
@@ -775,6 +788,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     session = null;
     finishedAt = null;
     stopping = false;
+    previewRetired = false;
     captureEpoch++;
     talkBtn.setAttribute('aria-pressed', 'false');
     talkBtn.classList.remove('on');

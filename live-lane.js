@@ -19,16 +19,50 @@ export const NOTES = {
   unavailable: 'La transcripción en vivo no está disponible en este dispositivo o navegador; las burbujas llegan al terminar cada frase.',
   bilingual: 'Sin transcripción en vivo en una reunión bilingüe: el reconocimiento de voz solo oye un idioma.',
   disabled: 'La transcripción en vivo con el modelo local está apagada en Ajustes.',
+  optIn: 'Sin texto en vivo: puedes activar Whisper local en Ajustes (descarga ~120 MB la primera vez).',
   retired: 'La transcripción en vivo se apagó: este dispositivo no la procesa a tiempo.',
 };
 
+// The preview model is about 120 MB on first use: a phone or tablet, likely on
+// mobile data, downloads it only once the learner turns it on in Ajustes.
+export function isMobile({ uaDataMobile, userAgent = '', maxTouchPoints = 0, coarse = false, shortSide = Infinity } = {}) {
+  // Client hints answer `mobile: false` on an Android tablet, which is still a
+  // tablet on mobile data as far as a 120 MB download goes.
+  if (uaDataMobile === true || /Android|iPhone|iPad|iPod/i.test(userAgent)) return true;
+  if (uaDataMobile === false) return false;
+  if (/Mobile/i.test(userAgent)) return true;
+  if (/Macintosh/.test(userAgent) && maxTouchPoints > 1) return true; // iPadOS reports a Mac
+  return coarse && shortSide < 768;
+}
+
+// The facts isMobile() reads, from an injected environment (the page passes
+// globalThis), so the decision itself stays testable.
+export function deviceFacts(env = globalThis) {
+  const nav = env.navigator || {};
+  const screen = env.screen;
+  return {
+    uaDataMobile: nav.userAgentData?.mobile,
+    userAgent: nav.userAgent || '',
+    maxTouchPoints: nav.maxTouchPoints || 0,
+    coarse: !!env.matchMedia?.('(pointer: coarse)').matches,
+    shortSide: screen ? Math.min(screen.width, screen.height) : Infinity,
+  };
+}
+
+// `livePreview` is tri-state: true/false is the learner's choice in Ajustes,
+// unset follows the device — on for a desktop, off for a phone or tablet.
+export const previewEnabled = (setting, mobile) => (typeof setting === 'boolean' ? setting : !mobile);
+
 // `lang` is the recogniser's language, null for a bilingual meeting. The preview
 // model is an English-only export, so it covers English meetings alone.
-export function liveMode({ lang, availability, webgpu, preview }) {
+export function liveMode({ lang, availability, webgpu, preview, mobile = false }) {
   if (!lang) return { kind: 'off', note: NOTES.bilingual };
   if (availability === 'available') return { kind: 'speech', note: null };
   if (availability === 'downloadable' || availability === 'downloading') return { kind: 'install', note: NOTES.install };
-  if (webgpu && lang.startsWith('en')) return preview ? { kind: 'preview', note: null } : { kind: 'off', note: NOTES.disabled };
+  if (webgpu && lang.startsWith('en')) {
+    if (previewEnabled(preview, mobile)) return { kind: 'preview', note: null };
+    return { kind: 'off', note: preview === false ? NOTES.disabled : NOTES.optIn };
+  }
   return { kind: 'off', note: NOTES.unavailable };
 }
 
@@ -55,15 +89,19 @@ export function createPreviewLane({ transcribe, onText, now = () => Date.now(), 
       if (busy || stopped || retired) return;
       busy = true;
       const t0 = now();
+      // A failed pass counts like a slow one: a worker that errors on every pass
+      // (a lost GPU device) would otherwise be fed audio forever behind a blank line.
+      const bad = () => {
+        if (++slow < PREVIEW_SLOW_ROUNDS) return false;
+        retired = true;
+        paint('');
+        onRetire?.();
+        return true;
+      };
       Promise.resolve(transcribe(audio)).then((text) => {
         if (stopped || retired) return;
         if (now() - t0 > PREVIEW_MAX_MS) {
-          if (++slow >= PREVIEW_SLOW_ROUNDS) {
-            retired = true;
-            paint('');
-            onRetire?.();
-            return;
-          }
+          if (bad()) return;
         } else {
           slow = 0;
         }
@@ -74,7 +112,7 @@ export function createPreviewLane({ transcribe, onText, now = () => Date.now(), 
         state = out.state;
         shownPiece = startedAt;
         paint(`${out.committed} ${out.tail}`.trim());
-      }, () => {}).finally(() => { busy = false; });
+      }, () => { if (!stopped && !retired) bad(); }).finally(() => { busy = false; });
     },
 
     closed(startedAt) {

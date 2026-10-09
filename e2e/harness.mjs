@@ -68,7 +68,7 @@ export async function startServer() {
 // the page's own and its workers' (the embed worker is the one that downloads the
 // model), attached automatically.
 export async function openPage(chrome, base, { initScript, cpuThrottle } = {}) {
-  const page = { errors: [], externalRequests: [], throttled: [] };
+  const page = { errors: [], externalRequests: [], modelRequests: [], throttled: [] };
   const { targetId } = await chrome.send('Target.createTarget', { url: 'about:blank' });
   const session = await chrome.attach(targetId);
   page.session = session;
@@ -98,7 +98,8 @@ export async function openPage(chrome, base, { initScript, cpuThrottle } = {}) {
       const url = params.request?.url || '';
       if (/^https?:/.test(url)) {
         const host = new URL(url).hostname;
-        if (host !== '127.0.0.1' && !MODEL_HOSTS.has(host)) page.externalRequests.push(url);
+        if (MODEL_HOSTS.has(host)) page.modelRequests.push(url);
+        else if (host !== '127.0.0.1') page.externalRequests.push(url);
       }
       return;
     }
@@ -201,7 +202,8 @@ function harnessSettings({ transcribe, chat, lang, mockUrl, live }) {
     keys: { [transcribe]: FAKE_KEYS[transcribe], [chatProvider]: FAKE_KEYS[chatProvider] },
     lang,
     translate: !!chat,
-    livePreview: live !== 'none',
+    // Unset unless the baseline needs it off: the device decides, as for a new learner.
+    livePreview: live === 'none' ? false : undefined,
     groqBase: mockUrl,
     bases: { openai: mockUrl, gemini: mockUrl, anthropic: mockUrl },
   };
@@ -214,6 +216,9 @@ const NO_TRANSLATOR = 'delete window.Translator;';
 
 // --live=preview and --live=none measure a browser without on-device recognition.
 const NO_SPEECH = 'delete window.SpeechRecognition; delete window.webkitSpeechRecognition;';
+
+// --mobile: what a phone's Chrome reports through User-Agent Client Hints.
+const MOBILE = "Object.defineProperty(Navigator.prototype, 'userAgentData', { configurable: true, get: () => ({ mobile: true, brands: [], platform: 'Android' }) });";
 
 // Ported from the extension's prepareLive(): what a real install has and a
 // throwaway profile does not is the on-device Web Speech pack. It only downloads
@@ -235,7 +240,7 @@ async function prepareLive(chrome, session, lang) {
 // `live`: null leaves the profile as it is; 'speech' installs the on-device pack
 // first; 'preview' hides Web Speech and turns the local Whisper lane on; 'none'
 // hides Web Speech with the lane off — the baseline the lane is compared against.
-export async function runConversation({ learner, other, condition = 'room', delayMs = 900, lang = 'en', cpuThrottle = 0, transcribe = 'groq', chat = null, live = null, previewModel = null, log = console.log }) {
+export async function runConversation({ learner, other, condition = 'room', delayMs = 900, lang = 'en', cpuThrottle = 0, transcribe = 'groq', chat = null, live = null, previewModel = null, mobile = false, log = console.log }) {
   const name = `${slug(learner)}-${slug(other)}-${condition}`;
   const enrollWav = join(FIXTURES, `enroll-${slug(learner)}-${condition}.wav`);
   const convoWav = join(FIXTURES, `${name}.wav`);
@@ -279,7 +284,7 @@ export async function runConversation({ learner, other, condition = 'room', dela
       const slow = cpuThrottle ? `;addEventListener('DOMContentLoaded', () => { if (window.__ec) window.__ec.cpuSlowdown = ${cpuThrottle}; });` : '';
       const model = previewModel ? `;addEventListener('DOMContentLoaded', () => { if (window.__ec) window.__ec.previewModel = ${JSON.stringify(previewModel)}; });` : '';
       const hide = live === 'preview' || live === 'none' ? NO_SPEECH : '';
-      const page = await openPage(chrome, base, { initScript: MIC_CLOCK + slow + model + hide + (chat ? NO_TRANSLATOR : ''), cpuThrottle });
+      const page = await openPage(chrome, base, { initScript: MIC_CLOCK + slow + model + hide + (mobile ? MOBILE : '') + (chat ? NO_TRANSLATOR : ''), cpuThrottle });
       const { session } = page;
       if (cpuThrottle) log(`meeting: CPU throttled ${cpuThrottle}×`);
       if (live === 'speech') {
@@ -303,6 +308,7 @@ export async function runConversation({ learner, other, condition = 'room', dela
       const events = await chrome.evaluate(session, 'window.__ec.events');
       const embeds = await chrome.evaluate(session, 'window.__ec.embeds');
       const previews = await chrome.evaluate(session, 'window.__ec.previews');
+      const whisperRequests = page.modelRequests.filter((u) => /whisper/i.test(u));
       errors.push(...page.errors);
       external.push(...page.externalRequests);
       assertNoExternal(external, 'e2e');
@@ -312,7 +318,7 @@ export async function runConversation({ learner, other, condition = 'room', dela
       }
       const misrouted = [...mock.requests, ...mock.chats].filter((r) => !r.auth || r.provider !== (mock.chats.includes(r) ? chat : transcribe));
       for (const r of misrouted) errors.push(`[e2e] request ${r.n} went to ${r.provider} (auth in its own header: ${r.auth})`);
-      result = { name, learner, other, condition, cpuThrottle, transcribe, chat, live, manifest, micT0, events, embeds, previews, requests: mock.requests.slice(), chats: mock.chats.slice(), errors };
+      result = { name, learner, other, condition, cpuThrottle, transcribe, chat, live, mobile, whisperRequests, manifest, micT0, events, embeds, previews, requests: mock.requests.slice(), chats: mock.chats.slice(), errors };
     } finally {
       await chrome.close();
     }

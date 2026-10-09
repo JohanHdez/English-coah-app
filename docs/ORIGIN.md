@@ -14,8 +14,8 @@ or in the extension is ported by hand; the two do not share history.
 | `lib/queue.test.js` | `queue.test.js` | `ded2c34` |
 | `lib/langid.js` | `langid.js` | `ded2c34` |
 | `lib/langid.test.js` | `langid.test.js` | `ded2c34` |
-| `lib/live.js` | `live.js` | `ded2c34` |
-| `lib/live.test.js` | `live.test.js` | `ded2c34` |
+| `lib/live.js` | `live.js` | `ded2c34` (modified, see note below) |
+| `lib/live.test.js` | `live.test.js` | `ded2c34` (two tests added) |
 | `recorder-worklet.js` | `recorder-worklet.js` | `ded2c34` (modified, see note below) |
 | `vendor/transformers.js` | `vendor/transformers.js` | `ded2c34` |
 | `vendor/ort-wasm-simd-threaded.mjs` | `vendor/ort-wasm-simd-threaded.mjs` | `ded2c34` |
@@ -31,6 +31,15 @@ or in the extension is ported by hand; the two do not share history.
 | `preview-worker.js` | `worker.js` | `ded2c34` (rewritten: its WebGPU load ladder only, see `live-lane.js` for the preview lane's rules from `offscreen.js`) |
 | `LICENSE` | `LICENSE` | `ded2c34` |
 | `THIRD-PARTY-NOTICES.md` | `THIRD-PARTY-NOTICES.md` | `ded2c34` |
+
+## `lib/live.js`: results joined with a space (Phase 2, Task 7, fix round 1)
+
+The extension concatenated the recogniser's results with nothing between them, so
+a final followed by the next interim read "numbersI think" (seen in the harness's
+speech log). `joined()` now trims each result and joins the non-empty ones with a
+single space, and `reset()` counts the characters it skips in that same joined
+text, so the mid-word cut correction does not drift by one per result. Two tests
+in `lib/live.test.js` cover both. Worth porting back to the extension.
 
 ## `recorder-worklet.js`: diverged from the copy (Task 5, fix round 1)
 

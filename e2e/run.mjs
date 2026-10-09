@@ -7,7 +7,7 @@
 //
 // Usage: node e2e/run.mjs <learner> <other> [--condition=room|clean] [--delay=900] [--lang=en|multi] [--throttle=4]
 //                         [--transcribe=groq|openai|gemini] [--chat=groq|openai|gemini|anthropic]
-//                         [--live=speech|preview|none] [--preview-model=onnx-community/whisper-base.en]
+//                         [--live=speech|preview|none] [--preview-model=onnx-community/whisper-base.en] [--mobile]
 //
 // --transcribe picks the provider whose request shape carries the audio (default
 // groq); every one is answered by the same stand-in. --chat turns translation on
@@ -26,6 +26,8 @@
 // baseline for the lane's cost. Without it the profile decides. The run then
 // prints, per cue, when live text first appeared after the cue's onset, and every
 // stretch longer than 2.5 s in which the line was blank while a cue was spoken.
+// --mobile reports `mobile: true` through User-Agent Client Hints: with the setting
+// unset the Whisper lane stays off, and any request for a Whisper file fails the run.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -36,7 +38,7 @@ const args = process.argv.slice(2);
 const positional = args.filter((a) => !a.startsWith('--'));
 const opt = (name, fallback) => args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
 if (positional.length < 2) {
-  console.error('usage: node e2e/run.mjs <learner> <other> [--condition=room|clean] [--delay=900] [--lang=en|multi] [--throttle=4] [--transcribe=<id>] [--chat=<id>] [--live=speech|preview|none] [--preview-model=<id>]');
+  console.error('usage: node e2e/run.mjs <learner> <other> [--condition=room|clean] [--delay=900] [--lang=en|multi] [--throttle=4] [--transcribe=<id>] [--chat=<id>] [--live=speech|preview|none] [--preview-model=<id>] [--mobile]');
   process.exit(2);
 }
 const [learner, other] = positional;
@@ -48,6 +50,7 @@ const transcribe = opt('transcribe', 'groq');
 const chat = opt('chat', null);
 const live = opt('live', null);
 const previewModel = opt('preview-model', null);
+const mobile = args.includes('--mobile');
 if (live && !['speech', 'preview', 'none'].includes(live)) {
   console.error('[e2e] --live takes speech|preview|none');
   process.exit(2);
@@ -61,7 +64,7 @@ const pad = (s, n) => String(s).padEnd(n);
 const fmt = (v, d = 1) => (v === null || v === undefined ? '-' : v.toFixed(d));
 const pct = (v) => (v === null ? '-' : `${(v * 100).toFixed(1)} %`);
 
-const run = await runConversation({ learner, other, condition, delayMs, lang, cpuThrottle, transcribe, chat, live, previewModel });
+const run = await runConversation({ learner, other, condition, delayMs, lang, cpuThrottle, transcribe, chat, live, previewModel, mobile });
 const { perCue, totals } = score(run);
 const cost = embedCost(run);
 const liveLine = liveScore(run);
@@ -116,6 +119,13 @@ console.log(`  live coverage             mean ${pct(liveLine.meanCoverage)} of e
 console.log(`  live blank > 2.5 s        ${liveLine.blank.length} stretches, ${fmt(liveLine.blankMs / 1000)} s in all${liveLine.blank.length ? ': ' + liveLine.blank.map((b) => `cue ${b.key + 1} ${(b.from / 1000).toFixed(1)}–${(b.to / 1000).toFixed(1)} s${b.open ? ' (to its end)' : ''}`).join(', ') : ''}`);
 const pv = (run.previews || []).map((p) => p.ms).sort((a, b) => a - b);
 const pq = (q) => (pv.length ? pv[Math.min(pv.length - 1, Math.floor(q * pv.length))] : null);
+console.log(`  whisper model requests    ${run.whisperRequests.length}${mobile ? ' (--mobile: a phone downloads nothing until the learner opts in)' : ''}`);
+// The model may come from the browser's cache with no request at all, so the lane
+// having loaded or run counts too.
+if (mobile && (run.whisperRequests.length || modes.some((e) => e.kind === 'preview-ready') || (run.previews || []).length)) {
+  console.log('  FAIL: a phone started the Whisper lane without being asked');
+  process.exitCode = 1;
+}
 if (pv.length) console.log(`  preview passes            ${pv.length} · p50 ${fmt(pq(0.5), 0)} ms · p90 ${fmt(pq(0.9), 0)} ms · max ${fmt(pv.at(-1), 0)} ms (retires after 2 in a row over 1500 ms)`);
 console.log(`  error events              ${totals.errorEvents}`);
 console.log(`  console errors            ${run.errors.length}`);
@@ -125,6 +135,6 @@ if (run.errors.length || totals.errorEvents) process.exitCode = 1;
 
 const dir = join(FIXTURES, '..', 'results');
 mkdirSync(dir, { recursive: true });
-const file = join(dir, `run-${new Date().toISOString().replace(/[:.]/g, '-')}-${slug(learner)}-${slug(other)}-${condition}${cpuThrottle ? `-cpu${cpuThrottle}x` : ''}-${transcribe}${chat ? `-${chat}` : ''}${live ? `-live-${live}` : ''}.json`);
-writeFileSync(file, JSON.stringify({ args: { learner, other, condition, delayMs, lang, cpuThrottle, transcribe, chat, live, previewModel }, totals, cost, liveLine, perCue, run }, null, 1));
+const file = join(dir, `run-${new Date().toISOString().replace(/[:.]/g, '-')}-${slug(learner)}-${slug(other)}-${condition}${cpuThrottle ? `-cpu${cpuThrottle}x` : ''}-${transcribe}${chat ? `-${chat}` : ''}${live ? `-live-${live}` : ''}${mobile ? '-mobile' : ''}.json`);
+writeFileSync(file, JSON.stringify({ args: { learner, other, condition, delayMs, lang, cpuThrottle, transcribe, chat, live, previewModel, mobile }, totals, cost, liveLine, perCue, run }, null, 1));
 console.log(`\nsaved ${file}`);

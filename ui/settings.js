@@ -15,6 +15,7 @@ import { profileFields } from './coach.js';
 import { CATALOGUE } from '../lib/phrasebook.js';
 import { categoryActive, setCategoryActive } from '../coachdata.js';
 import { providersFor, providerById, routing, isConfigured, isLocalBase } from '../providers.js';
+import { isMobile, deviceFacts, previewEnabled } from '../live-lane.js';
 
 function field(labelText, input) {
   const label = document.createElement('label');
@@ -181,11 +182,11 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
 
   const previewInput = document.createElement('input');
   previewInput.type = 'checkbox';
-  previewInput.checked = settings.livePreview !== false;
+  previewInput.checked = previewEnabled(settings.livePreview, isMobile(deviceFacts(globalThis)));
   previewInput.addEventListener('change', () => patch({ livePreview: previewInput.checked }));
   const previewLabel = document.createElement('label');
   previewLabel.className = 'checkbox';
-  previewLabel.append(previewInput, document.createTextNode('Transcripción en vivo con un modelo local (si el navegador no tiene reconocimiento de voz; necesita WebGPU)'));
+  previewLabel.append(previewInput, document.createTextNode('Texto en vivo con Whisper local (descarga ~120 MB la primera vez)'));
   section.append(previewLabel);
 
   // --- Coach: profile, today's context, phrases ---------------------------------

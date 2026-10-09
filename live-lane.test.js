@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { liveMode, createPreviewLane, PREVIEW_MAX_MS, PREVIEW_SLOW_ROUNDS, NOTES } from './live-lane.js';
+import { liveMode, createPreviewLane, PREVIEW_MAX_MS, PREVIEW_SLOW_ROUNDS, NOTES, isMobile, previewEnabled, deviceFacts } from './live-lane.js';
 
 test('liveMode: an installed pack runs the recogniser, with no note', () => {
   assert.deepEqual(liveMode({ lang: 'en-US', availability: 'available', webgpu: true, preview: true }), { kind: 'speech', note: null });
@@ -38,6 +38,62 @@ test('liveMode: the lane turned off in Ajustes says that, not that the device ca
 test('liveMode: the preview lane is English only, so a Spanish meeting does not get it', () => {
   const m = liveMode({ lang: 'es-ES', availability: 'unsupported', webgpu: true, preview: true });
   assert.deepEqual(m, { kind: 'off', note: NOTES.unavailable });
+});
+
+test('liveMode: on a phone the lane waits for the learner to turn it on, and says where', () => {
+  const unset = liveMode({ lang: 'en-US', availability: 'unsupported', webgpu: true, preview: undefined, mobile: true });
+  assert.deepEqual(unset, { kind: 'off', note: NOTES.optIn });
+  assert.ok(/Ajustes/.test(NOTES.optIn) && /120 MB/.test(NOTES.optIn));
+  const optedIn = liveMode({ lang: 'en-US', availability: 'unsupported', webgpu: true, preview: true, mobile: true });
+  assert.deepEqual(optedIn, { kind: 'preview', note: null });
+  const optedOut = liveMode({ lang: 'en-US', availability: 'unsupported', webgpu: true, preview: false, mobile: true });
+  assert.deepEqual(optedOut, { kind: 'off', note: NOTES.disabled });
+});
+
+test('liveMode: on a desktop an unset setting means the lane runs', () => {
+  const m = liveMode({ lang: 'en-US', availability: 'unsupported', webgpu: true, preview: undefined, mobile: false });
+  assert.deepEqual(m, { kind: 'preview', note: null });
+});
+
+test('previewEnabled: an explicit choice wins; unset follows the device', () => {
+  assert.equal(previewEnabled(undefined, false), true);
+  assert.equal(previewEnabled(undefined, true), false);
+  assert.equal(previewEnabled(true, true), true);
+  assert.equal(previewEnabled(false, false), false);
+});
+
+const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36';
+const IPAD_OS = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15';
+const MAC = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+
+const ANDROID_TABLET = 'Mozilla/5.0 (Linux; Android 14; SM-X710) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+
+test('isMobile: User-Agent Client Hints decide when the browser has them, except an Android tablet', () => {
+  assert.equal(isMobile({ uaDataMobile: true, userAgent: MAC }), true);
+  assert.equal(isMobile({ uaDataMobile: false, userAgent: MAC, maxTouchPoints: 0 }), false);
+  assert.equal(isMobile({ uaDataMobile: false, userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Mobile', coarse: true, shortSide: 400 }), false);
+  assert.equal(isMobile({ uaDataMobile: false, userAgent: ANDROID_TABLET }), true);
+});
+
+test('isMobile: without client hints, the user agent, iPadOS touch, or a small coarse screen', () => {
+  assert.equal(isMobile({ userAgent: IPHONE }), true);
+  assert.equal(isMobile({ userAgent: ANDROID }), true);
+  assert.equal(isMobile({ userAgent: IPAD_OS, maxTouchPoints: 5 }), true);
+  assert.equal(isMobile({ userAgent: MAC, maxTouchPoints: 0 }), false);
+  assert.equal(isMobile({ userAgent: 'Unknown', coarse: true, shortSide: 400 }), true);
+  assert.equal(isMobile({ userAgent: 'Unknown', coarse: true, shortSide: 1080 }), false);
+  assert.equal(isMobile({ userAgent: 'Unknown', coarse: false, shortSide: 400 }), false);
+});
+
+test('deviceFacts: reads an injected environment', () => {
+  const env = {
+    navigator: { userAgentData: { mobile: true }, userAgent: MAC, maxTouchPoints: 0 },
+    matchMedia: (q) => ({ matches: q === '(pointer: coarse)' }),
+    screen: { width: 390, height: 844 },
+  };
+  assert.deepEqual(deviceFacts(env), { uaDataMobile: true, userAgent: MAC, maxTouchPoints: 0, coarse: true, shortSide: 390 });
+  assert.equal(isMobile(deviceFacts({})), false);
 });
 
 test('NOTES are Spanish, one line each', () => {
@@ -148,6 +204,19 @@ test('preview lane: a failed pass stays silent and frees the lane', async () => 
   await new Promise((res) => setImmediate(res));
   assert.deepEqual(r.shown, []);
   assert.equal(r.lane.canPreview(), true);
+});
+
+test('preview lane: two failed passes in a row retire it, like two slow ones', async () => {
+  const r = rig();
+  r.lane.offer(seg(1000));
+  r.calls[0].reject(new Error('gpu lost'));
+  await new Promise((res) => setImmediate(res));
+  assert.equal(r.retired(), 0);
+  r.lane.offer(seg(1000));
+  r.calls[1].reject(new Error('gpu lost'));
+  await new Promise((res) => setImmediate(res));
+  assert.equal(r.retired(), 1);
+  assert.equal(r.lane.canPreview(), false);
 });
 
 test('preview lane: nothing paints after stop()', async () => {
