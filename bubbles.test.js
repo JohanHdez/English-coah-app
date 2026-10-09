@@ -123,21 +123,14 @@ test('withTranslations stores the Spanish only for the words it translated', () 
 });
 
 test('mayInstallCapture: a live meeting takes the capture it just opened', () => {
-  assert.equal(mayInstallCapture({ destroyed: false, stopping: false, finishedAt: null }), true);
+  assert.equal(mayInstallCapture({ destroyed: false, epoch: 3, currentEpoch: 3 }), true);
 });
 
-test('mayInstallCapture: nothing is installed once the screen is gone, Terminar was tapped, or the meeting finished', () => {
-  assert.equal(mayInstallCapture({ destroyed: true, stopping: false, finishedAt: null }), false);
-  assert.equal(mayInstallCapture({ destroyed: false, stopping: true, finishedAt: null }), false);
-  assert.equal(mayInstallCapture({ destroyed: false, stopping: false, finishedAt: 1 }), false);
+test('mayInstallCapture: nothing is installed once the screen is gone', () => {
+  assert.equal(mayInstallCapture({ destroyed: true, epoch: 3, currentEpoch: 3 }), false);
 });
 
-test('mayInstallCapture: a live meeting takes the capture it just opened', () => {
-  assert.equal(mayInstallCapture({ destroyed: false, stopping: false, finishedAt: null }), true);
-});
-
-test('mayInstallCapture: nothing is installed once the screen is gone, Terminar was tapped, or the meeting finished', () => {
-  assert.equal(mayInstallCapture({ destroyed: true, stopping: false, finishedAt: null }), false);
-  assert.equal(mayInstallCapture({ destroyed: false, stopping: true, finishedAt: null }), false);
-  assert.equal(mayInstallCapture({ destroyed: false, stopping: false, finishedAt: 1 }), false);
+test('mayInstallCapture: a capture opened before Terminar or Nueva reunión is stale', () => {
+  assert.equal(mayInstallCapture({ destroyed: false, epoch: 3, currentEpoch: 4 }), false);
+  assert.equal(mayInstallCapture({ destroyed: false, epoch: 3, currentEpoch: 5 }), false);
 });

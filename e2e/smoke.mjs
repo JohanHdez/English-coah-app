@@ -33,7 +33,16 @@ const KEEP_STREAMS = `(() => {
   const md = navigator.mediaDevices;
   const gum = md.getUserMedia.bind(md);
   window.__streams = [];
-  md.getUserMedia = async (c) => { const s = await gum(c); window.__streams.push(s); return s; };
+  window.__hold = null;
+  md.getUserMedia = async (c) => {
+    const hold = window.__hold;
+    let held = false;
+    if (hold && hold.left > 0) { hold.left--; hold.taken = true; held = true; await hold.promise; }
+    const s = await gum(c);
+    s.__late = held;
+    window.__streams.push(s);
+    return s;
+  };
 })();`;
 
 // Headless Chrome refuses the screen Wake Lock, so the app's own warning about it
@@ -210,18 +219,17 @@ async function main() {
     const afterResume = await bubbleCount(chrome, session);
     console.log(`meeting: «Reanudar» restarted capture into the same meeting (${beforeLoss} -> ${afterResume} bubbles, ${await chrome.evaluate(session, 'window.__streams.length')} streams opened)`);
 
-    // Phase 2, task 1: capture is lost again, «Reanudar» is tapped and «Terminar»
-    // right behind it, before the microphone has finished opening. The stream the
-    // resume opens must be released, not installed, and nothing may reach the
-    // stand-in once «Terminar» is done.
+    // Phase 2, task 1: capture is lost again and the next microphone request is
+    // held (as a permission prompt would hold it). «Reanudar», then «Terminar»,
+    // then «Nueva reunión» all happen before it is granted; when it is, that
+    // stale stream must be ended and must not become the new meeting's capture.
     await chrome.evaluate(session, `
       window.__streams.forEach((s) => s.getTracks().forEach((t) => t.stop()));
       document.dispatchEvent(new Event('visibilitychange'));
+      window.__hold = { left: 1, taken: false, released: false, promise: new Promise((r) => { window.__releaseGum = () => { window.__hold.released = true; r(); }; }) };
     `);
-    const streamsBeforeRace = await chrome.evaluate(session, 'window.__streams.length');
     await tap(chrome, session, '.meeting .resume-capture');
-    // N3 + N4: "Terminar" must complete (drain, bounded) and mark the saved
-    // transcript finished, so a future mount does not offer it as unfinished.
+    await waitFor(() => chrome.evaluate(session, 'window.__hold.taken'), { label: 'the held microphone request' });
     const t3 = Date.now();
     await tap(chrome, session, '.meeting .controls .stop-meeting');
     await waitFor(
@@ -229,25 +237,38 @@ async function main() {
       { timeoutMs: DRAIN_TIMEOUT_MS + 5000, label: '"Terminar" to complete (drain, then "Reunión terminada.")' },
     );
     console.log(`meeting: "Terminar" completed in ${((Date.now() - t3) / 1000).toFixed(1)} s`);
-    const uploadsAtStop = mock.requests.length;
-    await sleep(4000);
-    const live = await chrome.evaluate(session, "window.__streams.flatMap((s) => s.getTracks()).filter((t) => t.readyState !== 'ended').length");
-    const opened = await chrome.evaluate(session, 'window.__streams.length');
-    if (opened <= streamsBeforeRace) throw new Error('[smoke] the race did not open a microphone: «Reanudar» had no effect');
-    if (live !== 0) throw new Error(`[smoke] ${live} microphone track(s) still live after «Terminar» during «Reanudar»`);
-    if (mock.requests.length !== uploadsAtStop) {
-      throw new Error(`[smoke] ${mock.requests.length - uploadsAtStop} upload(s) reached the stand-in after «Terminar»`);
-    }
-    console.log(`meeting: «Terminar» right behind «Reanudar» -> all ${opened} streams ended, ${mock.requests.length - uploadsAtStop} uploads after it`);
     const newMeetingShown = await chrome.evaluate(session, `
       [...document.querySelectorAll('.meeting .controls button')].some((b) => b.textContent === 'Nueva reunión' && !b.hidden)
     `);
     if (!newMeetingShown) throw new Error('[smoke] "Nueva reunión" was not offered after "Terminar"');
+    const uploadsAtStop = mock.requests.length;
+    await sleep(3000);
+    if (mock.requests.length !== uploadsAtStop) {
+      throw new Error(`[smoke] ${mock.requests.length - uploadsAtStop} upload(s) reached the stand-in after «Terminar»`);
+    }
     const savedAfterStop = await chrome.evaluate(session, "import('./store.js').then((m) => m.get('lastTranscript'))");
     if (!savedAfterStop?.finishedAt) {
       throw new Error(`[smoke] lastTranscript was not marked finished after "Terminar": ${JSON.stringify(savedAfterStop)}`);
     }
     console.log(`meeting: lastTranscript marked finished (finishedAt ${new Date(savedAfterStop.finishedAt).toISOString()}, ${savedAfterStop.entries.length} entries)`);
+
+    await tap(chrome, session, '.meeting .new-meeting');
+    await waitFor(
+      () => chrome.evaluate(session, "document.querySelector('.meeting .talk-toggle')?.disabled === false"),
+      { timeoutMs: 60000, label: 'the new meeting to record' },
+    );
+    const streamsBeforeRelease = await chrome.evaluate(session, 'window.__streams.length');
+    await chrome.evaluate(session, 'window.__releaseGum()');
+    await waitFor(() => chrome.evaluate(session, 'window.__streams.length').then((n) => n > streamsBeforeRelease), { label: 'the held microphone request to settle' });
+    await sleep(1500);
+    const late = await chrome.evaluate(session, `({
+      lateLive: window.__streams.filter((s) => s.__late && s.getTracks().some((t) => t.readyState !== 'ended')).length,
+      liveStreams: window.__streams.filter((s) => s.getTracks().some((t) => t.readyState !== 'ended')).length,
+    })`);
+    if (late.lateLive !== 0 || late.liveStreams !== 1) {
+      throw new Error(`[smoke] a stale «Reanudar» reached the new meeting: ${JSON.stringify(late)}`);
+    }
+    console.log('meeting: a «Reanudar» still waiting for the microphone when «Terminar» and «Nueva reunión» ran was ended on arrival; one capture live');
 
     assertNoExternal(page.externalRequests, 'smoke');
     console.log(`network: 0 requests reached api.groq.com (the mock handled ${mock.requests.length})`);

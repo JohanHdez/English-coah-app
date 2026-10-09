@@ -61,9 +61,9 @@ export function withTranslations(entries, cache) {
   });
 }
 
-// A capture finishes opening asynchronously (permission prompt, context resume);
-// by then «Terminar» may already have run, and a microphone that arrives after
-// it must be released, not installed.
-export function mayInstallCapture({ destroyed, stopping, finishedAt }) {
-  return !destroyed && !stopping && !finishedAt;
+// A capture finishes opening asynchronously (permission prompt, context resume).
+// «Terminar» and «Nueva reunión» each move the epoch on, so a microphone that
+// was requested before either arrives stale and must be released, not installed.
+export function mayInstallCapture({ destroyed, epoch, currentEpoch }) {
+  return !destroyed && epoch === currentEpoch;
 }

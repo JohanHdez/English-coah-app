@@ -123,7 +123,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   stopBtn.disabled = true;
   const newMeetingBtn = document.createElement('button');
   newMeetingBtn.type = 'button';
-  newMeetingBtn.className = 'primary';
+  newMeetingBtn.className = 'primary new-meeting';
   newMeetingBtn.textContent = 'Nueva reunión';
   newMeetingBtn.hidden = true;
   controls.append(startBtn, resumeBtn, talkBtn, pauseBtn, stopBtn, newMeetingBtn);
@@ -295,6 +295,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   const gate = createMeetingGate();
   let running = false;
   let stopping = false;
+  let captureEpoch = 0;
   let paused = false;
   let wakeLock = null;
   let captureHandle = null;
@@ -367,14 +368,14 @@ export function renderMeeting(root, { settings, onEvent }) {
   }
 
   async function requestWakeLock() {
-    if (!('wakeLock' in navigator)) { warnNoWakeLock(); return; }
+    if (!('wakeLock' in navigator)) { if (!stopping && !destroyed) warnNoWakeLock(); return; }
     try {
       wakeLock = await navigator.wakeLock.request('screen');
       if (stopping || destroyed) { wakeLock.release().catch(() => {}); wakeLock = null; return; }
       if (wakeLockWarning) setRecordingStatus();
       wakeLock.addEventListener('release', () => { if (running) warnNoWakeLock(); });
     } catch {
-      warnNoWakeLock();
+      if (!stopping && !destroyed) warnNoWakeLock();
     }
   }
 
@@ -389,17 +390,18 @@ export function renderMeeting(root, { settings, onEvent }) {
 
   // `audioContext` was created in the tap that started this; see capture.js.
   async function startRecording(audioContext) {
+    const epoch = captureEpoch;
     let handle;
     let discarded = false;
     try {
       handle = await startCapture({ onSegment: (seg) => { if (!discarded) session.segment(seg); }, audioContext });
     } catch (err) {
-      if (destroyed || stopping) return;
+      if (destroyed || epoch !== captureEpoch) return;
       setStatus(err?.message || String(err), 'error');
       (captureLost ? resumeBtn : startBtn).hidden = false;
       return;
     }
-    if (!mayInstallCapture({ destroyed, stopping, finishedAt })) {
+    if (!mayInstallCapture({ destroyed, epoch, currentEpoch: captureEpoch })) {
       discarded = true;
       handle.stop().catch(() => {});
       return;
@@ -416,7 +418,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     stopBtn.disabled = false;
     setRecordingStatus();
     await requestWakeLock();
-    if (!paused && !stopping) await setupLive(captureHandle.stream.getAudioTracks()[0]);
+    if (!paused && epoch === captureEpoch) await setupLive(captureHandle.stream.getAudioTracks()[0]);
   }
 
   async function init(audioContext) {
@@ -540,6 +542,7 @@ export function renderMeeting(root, { settings, onEvent }) {
 
   stopBtn.addEventListener('click', async () => {
     stopping = true;
+    captureEpoch++;
     running = false;
     resumeBtn.hidden = true;
     talkBtn.disabled = true;
@@ -580,6 +583,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     session = null;
     finishedAt = null;
     stopping = false;
+    captureEpoch++;
     talkBtn.setAttribute('aria-pressed', 'false');
     talkBtn.classList.remove('on');
     pauseBtn.textContent = 'Pausar';
