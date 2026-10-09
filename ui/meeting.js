@@ -13,7 +13,8 @@ import { createSpeakers } from '../speaker.js';
 import { startCapture, createAudioContext } from '../capture.js';
 import { transcribe } from '../transcribe.js';
 import { toSpanish } from '../translate.js';
-import { liveAvailability, startLive } from '../lib/live.js';
+import { liveAvailability, installLive, startLive } from '../lib/live.js';
+import { liveMode, createPreviewLane, NOTES } from '../live-lane.js';
 import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations, mayInstallCapture } from '../bubbles.js';
 import { MODEL_ID } from '../embed.js';
 import * as store from '../store.js';
@@ -28,9 +29,9 @@ const DRAIN_TIMEOUT_MS = 35000;
 
 const CAPTURE_LOST = '[micrófono] La captura se detuvo mientras la app estaba en segundo plano.';
 
-// A Web Speech recogniser hears one language. 'multi' (bilingual) meetings hide
-// the live line entirely rather than mis-recognising whichever half it guesses
-// wrong — the same call the extension makes. Read fresh on every (re)start, so
+// A Web Speech recogniser hears one language. 'multi' (bilingual) meetings get no
+// live line, and a note saying why, rather than mis-recognising whichever half it
+// guesses wrong — the same call the extension makes. Read fresh on every (re)start, so
 // a language change from the settings overlay takes effect next time the line
 // is (re)started, without needing to restart the meeting itself.
 function liveLangFor(lang) {
@@ -85,6 +86,18 @@ export function renderMeeting(root, { settings, onEvent }) {
   liveTextEl.className = 'live-text';
   liveLineEl.append(liveLabel, liveTextEl);
   section.append(liveLineEl);
+
+  const liveNoteEl = document.createElement('p');
+  liveNoteEl.className = 'live-note';
+  liveNoteEl.hidden = true;
+  const liveNoteText = document.createElement('span');
+  const installBtn = document.createElement('button');
+  installBtn.type = 'button';
+  installBtn.className = 'install-live';
+  installBtn.textContent = 'Instalar reconocimiento de voz';
+  installBtn.hidden = true;
+  liveNoteEl.append(liveNoteText, installBtn);
+  section.append(liveNoteEl);
 
   const statusEl = document.createElement('p');
   statusEl.className = 'status';
@@ -286,40 +299,159 @@ export function renderMeeting(root, { settings, onEvent }) {
   }
 
   // --- Live line ---------------------------------------------------------
+  // On-device Web Speech where the browser has it; otherwise, on a device with
+  // WebGPU, a local Whisper preview of the phrase still being spoken. Neither ever
+  // falls back to a cloud recogniser, and when neither runs the screen says why.
   let liveHandle = null;
+  let previewLane = null;
+  let previewWorker = null;
+  let previewReady = null;
+  let previewSeq = 0;
+  const previewPending = new Map();
   let liveAvailable = false;
   let liveToken = 0;
+  let installing = false;
 
   function setLiveText(text) {
     liveTextEl.textContent = text;
     liveLineEl.hidden = !liveAvailable || !text;
+    onEvent?.({ type: 'live', text: liveLineEl.hidden ? '' : text });
+  }
+
+  function setLiveNote(text, { install = false } = {}) {
+    liveNoteText.textContent = text ? text + ' ' : '';
+    installBtn.hidden = !install;
+    liveNoteEl.hidden = !text && !install;
+  }
+
+  function loadPreview() {
+    if (previewReady) return previewReady;
+    previewWorker = new Worker(new URL('../preview-worker.js', import.meta.url), { type: 'module' });
+    previewReady = new Promise((resolve, reject) => {
+      previewWorker.addEventListener('message', ({ data }) => {
+        if (data.id !== undefined) {
+          const p = previewPending.get(data.id);
+          previewPending.delete(data.id);
+          if (data.type === 'result') p?.resolve(data.text);
+          else p?.reject(new Error(data.message));
+        } else if (data.type === 'ready') resolve(data.device);
+        else if (data.type === 'error') reject(new Error(data.message));
+      });
+    });
+    previewReady.catch(() => {});
+    previewWorker.postMessage({ type: 'init', base: new URL('../vendor/', import.meta.url).href, model: window.__ec?.previewModel });
+    return previewReady;
+  }
+
+  function previewTranscribe(audio) {
+    const id = previewSeq++;
+    const t0 = performance.now();
+    const seconds = audio.length / 16000;
+    return new Promise((resolve, reject) => {
+      previewPending.set(id, {
+        resolve: (text) => { window.__ec?.previews.push({ ms: performance.now() - t0, seconds }); resolve(text); },
+        reject,
+      });
+      previewWorker.postMessage({ type: 'transcribe', id, audio }, [audio.buffer]);
+    });
+  }
+
+  function dropPreviewWorker() {
+    previewWorker?.terminate();
+    previewWorker = null;
+    previewReady = null;
+    for (const p of previewPending.values()) p.reject(new Error('stopped'));
+    previewPending.clear();
+  }
+
+  async function hasWebGPU() {
+    try { return !!(await navigator.gpu?.requestAdapter()); } catch { return false; }
+  }
+
+  // Started with the meeting rather than with the recording, so the model and its
+  // shaders are ready by the first sentence: loaded after capture began, the lane
+  // was measured ready 7.3 s in, the first three sentences blank.
+  async function preloadPreview() {
+    const lang = liveLangFor(settings.lang);
+    if (settings.livePreview === false || !lang) return;
+    const availability = await liveAvailability(lang);
+    if (destroyed || liveMode({ lang, availability, webgpu: await hasWebGPU(), preview: true }).kind !== 'preview') return;
+    loadPreview();
   }
 
   async function setupLive(track) {
     const token = ++liveToken;
     const lang = liveLangFor(settings.lang);
-    if (!lang) return; // bilingual: a single recogniser cannot hear both languages
-    const avail = await liveAvailability(lang);
-    // The await above can finish after a later pause (or a later setupLive call
+    const availability = lang ? await liveAvailability(lang) : null;
+    const needsGpu = lang && availability !== 'available' && availability !== 'downloadable' && availability !== 'downloading';
+    const webgpu = needsGpu ? await hasWebGPU() : false;
+    // The awaits above can finish after a later pause (or a later setupLive call
     // from a quick pause/resume) already moved on; the token guards against
     // starting a recogniser nobody asked for any more.
     if (destroyed || paused || !running || token !== liveToken) return;
-    liveAvailable = avail === 'available';
-    if (!liveAvailable) return;
-    liveHandle = startLive({
-      track,
-      lang,
-      onText: setLiveText,
-      onError: () => { liveAvailable = false; setLiveText(''); },
-    });
+    const mode = liveMode({ lang, availability, webgpu, preview: settings.livePreview !== false });
+    onEvent?.({ type: 'live-mode', kind: mode.kind, availability });
+    if (mode.kind === 'speech') {
+      setLiveNote('');
+      liveAvailable = true;
+      liveHandle = startLive({
+        track,
+        lang,
+        onText: setLiveText,
+        onError: () => { liveAvailable = false; setLiveText(''); setLiveNote(NOTES.unavailable); },
+      });
+    } else if (mode.kind === 'install') {
+      setLiveNote(installing ? NOTES.installing : mode.note, { install: !installing });
+    } else if (mode.kind === 'preview') {
+      setLiveNote(NOTES.loading);
+      let device;
+      try { device = await loadPreview(); } catch {
+        if (token === liveToken) setLiveNote(NOTES.unavailable);
+        return;
+      }
+      if (destroyed || paused || !running || token !== liveToken) return;
+      setLiveNote('');
+      onEvent?.({ type: 'live-mode', kind: 'preview-ready', device });
+      liveAvailable = true;
+      previewLane = createPreviewLane({
+        transcribe: previewTranscribe,
+        onText: setLiveText,
+        onRetire: () => {
+          liveAvailable = false;
+          setLiveNote(NOTES.retired);
+          onEvent?.({ type: 'live-mode', kind: 'retired' });
+        },
+      });
+    } else {
+      setLiveNote(mode.note);
+    }
   }
+
+  installBtn.addEventListener('click', () => {
+    const lang = liveLangFor(settings.lang);
+    if (!lang) return;
+    // Called inside the tap, before any await: the download needs its user activation.
+    const pending = installLive(lang);
+    installing = true;
+    setLiveNote(NOTES.installing);
+    pending.then((ok) => {
+      installing = false;
+      if (destroyed) return;
+      if (!ok) { setLiveNote(NOTES.installFailed); return; }
+      setLiveNote('');
+      if (running && !paused && captureHandle) setupLive(captureHandle.stream.getAudioTracks()[0]);
+    });
+  });
 
   function teardownLive() {
     liveToken++; // invalidates any setupLive() still awaiting liveAvailability
     liveHandle?.stop();
     liveHandle = null;
+    previewLane?.stop();
+    previewLane = null;
     liveAvailable = false;
     setLiveText('');
+    if (!installing) setLiveNote('');
   }
 
   // --- Session wiring ---------------------------------------------------------
@@ -361,6 +493,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     if (event.type === 'bubble') {
       upsert(event.entry);
       liveHandle?.reset();
+      previewLane?.bubble();
       persistTranscript();
     } else if (event.type === 'error') {
       setStatus(event.text, 'error');
@@ -426,7 +559,16 @@ export function renderMeeting(root, { settings, onEvent }) {
     let handle;
     let discarded = false;
     try {
-      handle = await startCapture({ onSegment: (seg) => { if (!discarded) session.segment(seg); }, audioContext });
+      handle = await startCapture({
+        onSegment: (seg) => {
+          if (discarded) return;
+          previewLane?.closed(seg.startedAt);
+          session.segment(seg);
+        },
+        onPreview: (seg) => previewLane?.offer(seg),
+        canPreview: () => !!previewLane && previewLane.canPreview(),
+        audioContext,
+      });
     } catch (err) {
       if (destroyed || epoch !== captureEpoch) return;
       setStatus(err?.message || String(err), 'error');
@@ -462,6 +604,7 @@ export function renderMeeting(root, { settings, onEvent }) {
       return;
     }
     setStatus('Cargando el modelo de voz…');
+    preloadPreview();
     try {
       await modelReady;
     } catch (err) {
@@ -608,6 +751,7 @@ export function renderMeeting(root, { settings, onEvent }) {
       session.close();
     }
     gate.close();
+    dropPreviewWorker();
     if (destroyed) return;
     worker.terminate();
     finishedAt = Date.now(); // a future mount must not offer this as unfinished
@@ -655,5 +799,6 @@ export function renderMeeting(root, { settings, onEvent }) {
     if (wakeLock) wakeLock.release().catch(() => {});
     if (captureHandle) captureHandle.stop().catch(() => {});
     worker.terminate();
+    dropPreviewWorker();
   };
 }

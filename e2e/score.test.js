@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { score } from './score.mjs';
+import { score, blankSpans, liveScore } from './score.mjs';
 
 const manifest = {
   cues: [
@@ -50,4 +50,44 @@ test('a partial slice scores its words and marks the request audio-mixed', () =>
   assert.equal(r.totals.audioMixedRequests, 1);
   assert.equal(r.perCue[0].matched, 3);
   assert.equal(r.perCue[1].matched, 1);
+});
+
+// Live line: points are { t (ms from t0), text }.
+const live = (t, text) => ({ type: 'live', t: 1000 + t, text });
+const cues2 = { cues: [
+  { speaker: 'them', lang: 'en', text: 'one two three four', start: 1, end: 9 },
+  { speaker: 'me', lang: 'en', text: 'five six', start: 10, end: 12 },
+] };
+
+test('blankSpans: only holes longer than the grace count; text still standing from before covers a cue', () => {
+  const spans = blankSpans([
+    { t: 1500, text: 'one' },
+    { t: 3000, text: '' },
+    { t: 7000, text: 'three' },
+  ], cues2);
+  assert.deepEqual(spans.map((s) => [s.from, s.to, s.ms]), [[3000, 7000, 4000]]);
+  const late = blankSpans([{ t: 4000, text: 'one' }], cues2);
+  assert.deepEqual(late.map((s) => [s.from, s.to]), [[1000, 4000]]);
+});
+
+test('blankSpans: a cue with no live text at all is one open span', () => {
+  const spans = blankSpans([], cues2);
+  assert.deepEqual(spans.map((s) => [s.key, s.ms, s.open]), [[0, 8000, true]]);
+});
+
+test('liveScore: first live text after onset ignores the previous cue still standing', () => {
+  const r = liveScore({
+    manifest: cues2, micT0: 1000,
+    events: [live(1800, 'one two'), live(9500, 'one two three four'), live(10900, 'five'), live(12500, '')],
+  });
+  assert.deepEqual(r.perCue.map((c) => c.liveAfterOnsetMs), [800, 900]);
+  assert.deepEqual(r.perCue.map((c) => c.coverage), [1, 0.5]);
+  assert.equal(r.firstP50, 900);
+  assert.equal(r.cuesWithLive, 2);
+});
+
+test('liveScore: a cue the line never covered has no onset time', () => {
+  const r = liveScore({ manifest: cues2, micT0: 1000, events: [live(1800, 'one two')] });
+  assert.deepEqual(r.perCue.map((c) => c.liveAfterOnsetMs), [800, null]);
+  assert.equal(r.cuesWithLive, 1);
 });

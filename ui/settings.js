@@ -179,6 +179,15 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
   translateLabel.append(translateInput, document.createTextNode('Traducir al español'));
   section.append(translateLabel);
 
+  const previewInput = document.createElement('input');
+  previewInput.type = 'checkbox';
+  previewInput.checked = settings.livePreview !== false;
+  previewInput.addEventListener('change', () => patch({ livePreview: previewInput.checked }));
+  const previewLabel = document.createElement('label');
+  previewLabel.className = 'checkbox';
+  previewLabel.append(previewInput, document.createTextNode('Transcripción en vivo con un modelo local (si el navegador no tiene reconocimiento de voz; necesita WebGPU)'));
+  section.append(previewLabel);
+
   // --- Coach: profile, today's context, phrases ---------------------------------
   section.append(profileFields(settings, (text) => setNotice(text)));
 

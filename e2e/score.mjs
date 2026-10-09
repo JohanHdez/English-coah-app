@@ -117,3 +117,71 @@ export function score({ manifest, micT0, events, requests }) {
     },
   };
 }
+
+// Share of a cue's words that appear anywhere in `got`.
+function coverage(expected, got) {
+  const want = words(expected);
+  const have = new Set(words(got));
+  return want.length ? want.filter((w) => have.has(w)).length / want.length : 0;
+}
+
+// Ported from the extension's e2e/harness.mjs. Stretches, while a cue was being
+// spoken, during which the live line showed nothing. The grace is what a healthy
+// line needs to paint its first words; only longer holes count. Text still
+// standing from before a cue began counts as shown. `points` are { t, text } with
+// t in ms from the fixture's start.
+export function blankSpans(points, manifest, { grace = 2500 } = {}) {
+  const out = [];
+  manifest.cues.forEach((cue, key) => {
+    const start = cue.start * 1000;
+    const end = cue.end * 1000;
+    let blankSince = start;
+    let shown = false;
+    for (const p of points) {
+      if (p.t < start) { shown = !!p.text; blankSince = start; continue; }
+      if (p.t > end) break;
+      if (p.text) {
+        if (!shown && p.t - blankSince > grace) out.push({ key, from: blankSince, to: p.t });
+        shown = true;
+      } else if (shown) {
+        shown = false;
+        blankSince = p.t;
+      }
+    }
+    if (!shown && end - blankSince > grace) out.push({ key, from: blankSince, to: end, open: true });
+  });
+  return out.map((s) => ({ ...s, from: Math.round(s.from), to: Math.round(s.to), ms: Math.round(s.to - s.from) }));
+}
+
+// The live line («Hablando ahora…») against the fixture: the first text painted
+// after each cue's onset that is not the previous cue's line still standing, the
+// best coverage of the cue's words while it was spoken (+1.5 s), and the blank
+// stretches. One line serves both voices, so every cue is judged.
+export function liveScore({ manifest, micT0, events }) {
+  const points = events.filter((e) => e.type === 'live').map((e) => ({ t: e.t - micT0, text: (e.text || '').trim() }));
+  const perCue = manifest.cues.map((cue, idx) => {
+    const start = cue.start * 1000;
+    const end = cue.end * 1000 + 1500;
+    const before = points.filter((p) => p.t < start).at(-1);
+    const standing = before ? before.text : '';
+    const first = points.find((p) => p.t >= start && p.text && p.text !== standing);
+    const during = points.filter((p) => p.t >= start && p.t <= end && p.text);
+    return {
+      idx,
+      liveAfterOnsetMs: first ? Math.round(first.t - start) : null,
+      coverage: Math.max(0, ...during.map((p) => coverage(cue.text, p.text))),
+    };
+  });
+  const firsts = perCue.map((c) => c.liveAfterOnsetMs).filter((v) => v !== null).sort((a, b) => a - b);
+  const blank = blankSpans(points, manifest);
+  return {
+    perCue,
+    cuesWithLive: firsts.length,
+    firstP50: quantile(firsts, 0.5),
+    firstP90: quantile(firsts, 0.9),
+    meanCoverage: perCue.length ? perCue.reduce((n, c) => n + c.coverage, 0) / perCue.length : null,
+    blank,
+    blankMs: blank.reduce((n, s) => n + s.ms, 0),
+    painted: points.filter((p) => p.text).length,
+  };
+}

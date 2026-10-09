@@ -161,6 +161,18 @@ async function main() {
     if (!meetingOk) throw new Error('[smoke] the meeting screen did not render its expected elements');
     console.log('meeting: screen rendered (transcript, "Estoy hablando", "Pausar"/"Terminar")');
 
+    // The live line is never hidden silently: it runs, or a note (or the install
+    // button) says why not.
+    const liveState = await waitFor(() => chrome.evaluate(session, `(() => {
+      const mode = window.__ec.events.find((e) => e.type === 'live-mode');
+      if (!mode) return null;
+      const note = document.querySelector('.meeting .live-note');
+      return JSON.stringify({ kind: mode.kind, availability: mode.availability, note: note && !note.hidden ? note.firstChild.textContent.trim() : '', install: document.querySelector('.meeting .install-live')?.hidden === false });
+    })()`), { timeoutMs: 30000, label: 'the live line to be set up' });
+    const live = JSON.parse(liveState);
+    if (live.kind !== 'speech' && live.kind !== 'preview' && !live.note && !live.install) throw new Error(`[smoke] the live line is off with nothing said: ${liveState}`);
+    console.log(`meeting: live line ${live.kind} [${live.availability}]${live.note ? ` — «${live.note}»` : ''}${live.install ? ' + «Instalar reconocimiento de voz»' : ''}`);
+
     // --- Finding 1: Ajustes mid-meeting must not drop the conversation ------
     const t2 = Date.now();
     await waitFor(() => bubbleCount(chrome, session).then((n) => n > 0), {

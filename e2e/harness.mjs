@@ -193,7 +193,7 @@ const MIC_CLOCK = `(() => {
 
 // The settings a run starts from: every provider pointed at the stand-in (the
 // loopback overrides providers.js honours), a fake key for the chosen ones.
-function harnessSettings({ transcribe, chat, lang, mockUrl }) {
+function harnessSettings({ transcribe, chat, lang, mockUrl, live }) {
   const chatProvider = chat || 'groq';
   return {
     transcribeProvider: transcribe,
@@ -201,6 +201,7 @@ function harnessSettings({ transcribe, chat, lang, mockUrl }) {
     keys: { [transcribe]: FAKE_KEYS[transcribe], [chatProvider]: FAKE_KEYS[chatProvider] },
     lang,
     translate: !!chat,
+    livePreview: live !== 'none',
     groqBase: mockUrl,
     bases: { openai: mockUrl, gemini: mockUrl, anthropic: mockUrl },
   };
@@ -211,9 +212,30 @@ function harnessSettings({ transcribe, chat, lang, mockUrl }) {
 // of an on-device model the headless profile would try to download.
 const NO_TRANSLATOR = 'delete window.Translator;';
 
+// --live=preview and --live=none measure a browser without on-device recognition.
+const NO_SPEECH = 'delete window.SpeechRecognition; delete window.webkitSpeechRecognition;';
+
+// Ported from the extension's prepareLive(): what a real install has and a
+// throwaway profile does not is the on-device Web Speech pack. It only downloads
+// behind a user activation, which the protocol grants the script; once installed
+// it stays in e2e/.profile. A pack that will not install is reported, not fatal.
+async function prepareLive(chrome, session, lang) {
+  return chrome.evaluate(session, `(async () => {
+    const SR = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
+    if (!SR || typeof SR.available !== 'function') return 'speech: unsupported';
+    const before = await SR.available({ langs: ['${lang}'], processLocally: true });
+    if (before === 'available') return 'speech: available';
+    const ok = await SR.install({ langs: ['${lang}'], processLocally: true });
+    return 'speech: ' + before + ' → install ' + ok + ' → ' + await SR.available({ langs: ['${lang}'], processLocally: true });
+  })()`, { userGesture: true }).catch((e) => `speech: ${e.message}`);
+}
+
 // One conversation through the whole app. Returns the events with timestamps, the
 // fixture's manifest and the stand-in's request logs.
-export async function runConversation({ learner, other, condition = 'room', delayMs = 900, lang = 'en', cpuThrottle = 0, transcribe = 'groq', chat = null, log = console.log }) {
+// `live`: null leaves the profile as it is; 'speech' installs the on-device pack
+// first; 'preview' hides Web Speech and turns the local Whisper lane on; 'none'
+// hides Web Speech with the lane off — the baseline the lane is compared against.
+export async function runConversation({ learner, other, condition = 'room', delayMs = 900, lang = 'en', cpuThrottle = 0, transcribe = 'groq', chat = null, live = null, previewModel = null, log = console.log }) {
   const name = `${slug(learner)}-${slug(other)}-${condition}`;
   const enrollWav = join(FIXTURES, `enroll-${slug(learner)}-${condition}.wav`);
   const convoWav = join(FIXTURES, `${name}.wav`);
@@ -237,7 +259,7 @@ export async function runConversation({ learner, other, condition = 'room', dela
       await first.evaluate(session, `
         import('./store.js').then(async (m) => {
           await m.set('consent', true);
-          await m.set('settings', ${JSON.stringify(harnessSettings({ transcribe, chat, lang, mockUrl: mock.url }))});
+          await m.set('settings', ${JSON.stringify(harnessSettings({ transcribe, chat, lang, mockUrl: mock.url, live }))});
           await m.del('print');
           await m.del('lastTranscript');
         });
@@ -255,9 +277,15 @@ export async function runConversation({ learner, other, condition = 'room', dela
       // window.__ec is created by app.js; the slowdown is read when the meeting's
       // worker starts, after the app has run.
       const slow = cpuThrottle ? `;addEventListener('DOMContentLoaded', () => { if (window.__ec) window.__ec.cpuSlowdown = ${cpuThrottle}; });` : '';
-      const page = await openPage(chrome, base, { initScript: MIC_CLOCK + slow + (chat ? NO_TRANSLATOR : ''), cpuThrottle });
+      const model = previewModel ? `;addEventListener('DOMContentLoaded', () => { if (window.__ec) window.__ec.previewModel = ${JSON.stringify(previewModel)}; });` : '';
+      const hide = live === 'preview' || live === 'none' ? NO_SPEECH : '';
+      const page = await openPage(chrome, base, { initScript: MIC_CLOCK + slow + model + hide + (chat ? NO_TRANSLATOR : ''), cpuThrottle });
       const { session } = page;
       if (cpuThrottle) log(`meeting: CPU throttled ${cpuThrottle}×`);
+      if (live === 'speech') {
+        await waitFor(() => chrome.evaluate(session, "document.readyState === 'complete'"), { label: 'the page to load' });
+        log(`meeting: ${await prepareLive(chrome, session, lang === 'es' ? 'es-ES' : 'en-US')}`);
+      }
       await startMeeting(chrome, session);
       await waitFor(
         () => chrome.evaluate(session, "document.querySelector('.screen.meeting .controls .talk-toggle')?.disabled === false"),
@@ -274,6 +302,7 @@ export async function runConversation({ learner, other, condition = 'room', dela
       );
       const events = await chrome.evaluate(session, 'window.__ec.events');
       const embeds = await chrome.evaluate(session, 'window.__ec.embeds');
+      const previews = await chrome.evaluate(session, 'window.__ec.previews');
       errors.push(...page.errors);
       external.push(...page.externalRequests);
       assertNoExternal(external, 'e2e');
@@ -283,7 +312,7 @@ export async function runConversation({ learner, other, condition = 'room', dela
       }
       const misrouted = [...mock.requests, ...mock.chats].filter((r) => !r.auth || r.provider !== (mock.chats.includes(r) ? chat : transcribe));
       for (const r of misrouted) errors.push(`[e2e] request ${r.n} went to ${r.provider} (auth in its own header: ${r.auth})`);
-      result = { name, learner, other, condition, cpuThrottle, transcribe, chat, manifest, micT0, events, embeds, requests: mock.requests.slice(), chats: mock.chats.slice(), errors };
+      result = { name, learner, other, condition, cpuThrottle, transcribe, chat, live, manifest, micT0, events, embeds, previews, requests: mock.requests.slice(), chats: mock.chats.slice(), errors };
     } finally {
       await chrome.close();
     }

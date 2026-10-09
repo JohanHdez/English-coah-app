@@ -371,6 +371,17 @@ button.primary {
   font-style: italic;
 }
 
+.live-note {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.live-note .install-live {
+  margin-top: 0.25rem;
+}
+
 .toast {
   position: fixed;
   bottom: calc(5.5rem + env(safe-area-inset-bottom));

@@ -19,12 +19,13 @@ if ('serviceWorker' in navigator) {
 }
 
 // Only the loopback harness (Task 7, e2e/) reads this; nothing else is exposed on
-// window. Every event createSession emits during a meeting is pushed here, so the
-// harness can measure bubble latency without instrumenting the DOM, and every
-// embedding's round trip lands in `embeds`. The entry is copied because the
-// session keeps mutating it as later pieces fold in.
+// window. Every event the meeting emits is pushed here (createSession's, and the
+// live line's `live` / `live-mode`), so the harness can measure bubble latency
+// and the live line without instrumenting the DOM; every embedding's round trip
+// lands in `embeds`, every live preview pass's in `previews`. The entry is copied
+// because the session keeps mutating it as later pieces fold in.
 if (location.hostname === '127.0.0.1') {
-  window.__ec = { events: [], embeds: [] };
+  window.__ec = { events: [], embeds: [], previews: [] };
 }
 function reportEvent(event) {
   window.__ec?.events.push({ ...event, entry: event.entry && { ...event.entry }, t: Date.now() });

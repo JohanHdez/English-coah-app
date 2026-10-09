@@ -28,6 +28,7 @@ or in the extension is ported by hand; the two do not share history.
 | `lib/coach.test.js` | `coach.test.js` | `ded2c34` (adapted, see note below) |
 | `lib/phrasebook.js` | `phrasebook.js` | `ded2c34` |
 | `lib/phrasebook.test.js` | `phrasebook.test.js` | `ded2c34` |
+| `preview-worker.js` | `worker.js` | `ded2c34` (rewritten: its WebGPU load ladder only, see `live-lane.js` for the preview lane's rules from `offscreen.js`) |
 | `LICENSE` | `LICENSE` | `ded2c34` |
 | `THIRD-PARTY-NOTICES.md` | `THIRD-PARTY-NOTICES.md` | `ded2c34` |
 

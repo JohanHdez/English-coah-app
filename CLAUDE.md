@@ -76,6 +76,7 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 | `store.js` `translate.js` `ui/*.js` | Device storage, translation, screens | 6 |
 | `ui/coach.js` `coachdata.js` + `coachdata.test.js` | The coach panel above the conversation («Frases» / «Notas» / «Contexto», and «Respuesta» taking the same panel) and its pure settings writes; profile and context fields shared with Ajustes | P2-5 |
 | `e2e/mock-groq.mjs` `e2e/run.mjs` `e2e/harness.mjs` `e2e/score.mjs` `e2e/smoke.mjs` | The whole app in Chrome with a fake mic and a stand-in for every provider's shapes, scored per cue; a UI smoke test | 6, 7, P2-3 |
+| `live-lane.js` + `live-lane.test.js` `preview-worker.js` | Which live line a meeting gets (on-device Web Speech, the install button, the local Whisper preview lane on WebGPU, or a note saying why none) and the preview lane's stitching and slowness rule; the Whisper worker | P2-7 |
 | `README.md` `CLAUDE.md` `docs/ORIGIN.md` | Documentation | 1, 8 |
 
 ## Runtime contexts
@@ -86,7 +87,7 @@ content script — this is an ordinary web app).
 | Context | File(s) | Has | Lacks |
 |---|---|---|---|
 | Page | `app.js`, `ui/*.js` | DOM, `getUserMedia`, IndexedDB, fetch | nothing browser-standard |
-| Dedicated worker | `embed-worker.js` | WASM/WebGPU, ONNX (via `vendor/`) | DOM |
+| Dedicated worker | `embed-worker.js` `preview-worker.js` | WASM/WebGPU, ONNX (via `vendor/`) | DOM |
 | Audio worklet | `recorder-worklet.js` | realtime audio thread | everything else |
 | Service worker | `sw.js` | install/activate/fetch, Cache API | DOM, direct page state |
 
@@ -117,6 +118,9 @@ node e2e/run.mjs Paulina Samantha --condition=room     # the whole app on one co
 node e2e/run.mjs Mónica Daniel --condition=room
 node e2e/run.mjs Paulina Mónica --condition=room       # options: --condition=clean, --delay=<stand-in ms>, --lang=multi
 node e2e/run.mjs Paulina Samantha --transcribe=gemini --chat=anthropic   # another provider's request shapes
+node e2e/run.mjs Paulina Samantha --live=speech    # live line: on-device pack installed into e2e/.profile first
+node e2e/run.mjs Paulina Samantha --live=preview   # live line: Web Speech hidden, local Whisper lane (WebGPU)
+node e2e/run.mjs Paulina Samantha --live=none      # Web Speech hidden, lane off: the baseline for its cost
 ```
 
 `e2e/speakers.mjs` builds any missing fixture, serves the repo in-process, opens
@@ -166,8 +170,14 @@ pipeline's labels and timing, never Whisper's accuracy.
 - Copied modules (`lib/*`, `recorder-worklet.js`) drift from the extension; `docs/ORIGIN.md`
   names the commit they were taken from.
 - The enrollment reads a fixed English text, so the print is built from one language only.
-- No live line where on-device recognition is missing (most phones); the meeting still works,
-  with Groq transcripts only.
+- The live line: where Chrome's on-device pack is `downloadable` the meeting offers «Instalar
+  reconocimiento de voz»; where recognition is missing, a device with WebGPU runs
+  `onnx-community/whisper-tiny.en` (q4 decoder, fp32 encoder: about 120 MB on first use, from
+  Hugging Face) as a preview lane, on by default. Measured on 2026-10-09 (this Mac's GPU, not a
+  phone's): live text p50 1.05 s after onset, no measurable bubble-latency cost. A phone's GPU may
+  trip the slowness rule (two passes over 1.5 s in a row) and retire it, which the screen says.
+  Bilingual meetings get no live line. Web Speech itself went silent for 3 s at one speaker change
+  in Paulina–Samantha (cue 2, every run).
 - The speaker model is downloaded from Hugging Face on first use; offline first runs fail.
 - One-word backchannels are lost or mislabelled when they share a segment with the other voice.
 - The split point of segments of 3 s or more is biased up to 0.75 s early.

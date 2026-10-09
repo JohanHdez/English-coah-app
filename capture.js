@@ -38,7 +38,7 @@ export function createAudioContext() {
   return context;
 }
 
-export async function startCapture({ onSegment, onLevel, onBlock, constraints, audioContext: given } = {}) {
+export async function startCapture({ onSegment, onPreview, canPreview, onLevel, onBlock, constraints, audioContext: given } = {}) {
   const audioContext = given || createAudioContext();
   let stream;
   try {
@@ -73,7 +73,7 @@ export async function startCapture({ onSegment, onLevel, onBlock, constraints, a
     // onSegment is optional: enrollment only wants onBlock's raw, ungrouped
     // blocks, and a live Segmenter with no listener would throw the moment a
     // phrase actually closed.
-    const segmenter = new Segmenter('mixed', onSegment || (() => {}));
+    const segmenter = new Segmenter('mixed', onSegment || (() => {}), undefined, { onPreview, canPreview });
     let paused = false;
     worklet.port.onmessage = ({ data }) => {
       if (onLevel) onLevel(data.rms);

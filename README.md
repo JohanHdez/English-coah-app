@@ -70,7 +70,7 @@ documentation on 2026-10-09; `gpt-4o-mini-transcribe` is announced for removal o
 | The last conversation's transcript, with its Spanish translations (IndexedDB), until you delete it in «Ajustes» or start a new meeting. | |
 | Speaker embeddings: computed in the browser with the WeSpeaker model (WASM). | The first use downloads the speaker model (6.7 MB) from Hugging Face and the app's runtime (25 MB) from the app's own host; both are cached. |
 | Translation, when the browser has its own Translator (Chrome 138+). | Without it, translation falls back to the chat provider you chose, with the other speaker's text. |
-| The live line (word-by-word preview) uses the browser's on-device recognition only; if that is missing, the live line stays off. | Nothing else. The service worker caches the app shell and `vendor/`, never audio or provider responses. |
+| The live line («Hablando ahora…») uses the browser's on-device recognition («Instalar reconocimiento de voz» downloads it once, on your tap). Without it, on a device with WebGPU, a local Whisper model (whisper-tiny.en, about 120 MB from Hugging Face the first time) shows it instead; it can be turned off in «Ajustes». Neither is ever a cloud recogniser, and the live text is never stored or sent. Otherwise, or in a bilingual meeting, the screen says the live line is off. | Nothing else. The service worker caches the app shell and `vendor/`, never audio or provider responses. |
 
 **When the provider struggles.** A transcription that fails with 429, a 5xx or a dropped connection is
 retried twice (1 s, then 2 s, or the server's `Retry-After`, capped at 8 s); other 4xx are not
