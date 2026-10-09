@@ -289,7 +289,12 @@ export function buildChat(id, { system, user, model, maxTokens, schema, base, st
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
   };
   if (maxTokens) body[id === 'local' ? 'max_tokens' : 'max_completion_tokens'] = maxTokens;
-  if (schema) body.response_format = { type: 'json_schema', json_schema: { name: 'reply', schema } };
+  if (schema) {
+    const json_schema = { name: 'reply', schema };
+    // Strict is constrained decoding, the one mode that cannot return invalid JSON; a local server may not know it.
+    if (id !== 'local') json_schema.strict = true;
+    body.response_format = { type: 'json_schema', json_schema };
+  }
   return { url, init: { method: 'POST', headers: json, body: JSON.stringify(body) } };
 }
 

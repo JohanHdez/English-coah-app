@@ -218,6 +218,7 @@ test('OpenAI-compatible chat (Groq, OpenAI, local)', () => {
     assert.equal(body.response_format.type, 'json_schema');
     assert.deepEqual(body.response_format.json_schema.schema, schema);
     assert.ok(body.response_format.json_schema.name);
+    assert.equal(body.response_format.json_schema.strict, id === 'local' ? undefined : true);
     const plain = JSON.parse(buildChat(id, { system: 's', user: 'u', model: 'm', base }).init.body);
     assert.equal('response_format' in plain, false);
     assert.equal(parseChat(id, { choices: [{ message: { content: ' Hola ' } }] }), 'Hola');
