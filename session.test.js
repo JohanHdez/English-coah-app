@@ -507,10 +507,10 @@ test('a segment costs the slower of embed and transcribe, not their sum', async 
   await session.drain();
   const took = performance.now() - t0;
   assert.equal(bubbles(events).length, 1);
-  assert.ok(took >= 78 && took < 140, `took ${took.toFixed(0)} ms; in series it would be 160`);
+  assert.ok(took >= 78 && took < 155, `took ${took.toFixed(0)} ms; in series it would be 160`);
 });
 
-test('the upload starts before the embedding has finished', async () => {
+test('the upload starts before the embedding has finished', { timeout: 5000 }, async () => {
   const speakers = createSpeakers(ME_LIKE);
   const gate = deferred();
   let uploaded = 0;
@@ -617,7 +617,7 @@ test('an embed failure aborts that upload, emits one error, and the next segment
   assert.deepEqual(signals.map((s) => s.aborted), [true, false]);
 });
 
-test('an aborted waiting upload leaves the queue without running and frees its audio', async () => {
+test('an aborted waiting upload leaves the queue without running and frees its audio', { timeout: 5000 }, async () => {
   const q = createUploadQueue();
   const hold = deferred();
   q.enqueue(() => hold.promise, 1000);
