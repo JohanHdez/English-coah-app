@@ -546,3 +546,14 @@ test('a short local key cannot garble error messages', () => {
   assert.equal(redact('the model is loading', ['mode']), 'the model is loading');
   assert.equal(redact('k 12345678 x', ['12345678']), 'k «API key oculta» x');
 });
+
+test('a blocked or empty Gemini chat response is a staged Spanish error', () => {
+  const stage = '[coach]';
+  assert.throws(() => parseChat('gemini', { promptFeedback: { blockReason: 'SAFETY' } }, stage), /^Error: \[coach\] Gemini bloqueó esta respuesta \(SAFETY\)\./);
+  assert.throws(() => parseChat('gemini', { candidates: [] }, stage), /\(sin respuesta\)/);
+  for (const finishReason of ['SAFETY', 'RECITATION', 'PROHIBITED_CONTENT']) {
+    assert.throws(() => parseChat('gemini', { candidates: [{ content: { parts: [{ text: 'half' }] }, finishReason }] }, stage), new RegExp(`\\(${finishReason}\\)`));
+  }
+  assert.throws(() => parseChat('gemini', { candidates: [{ content: { parts: [] }, finishReason: 'STOP' }] }, '[traducción]'), /^Error: \[traducción\] Gemini no devolvió texto\./);
+  assert.equal(parseChat('gemini', { candidates: [{ content: { parts: [{ text: 'cut' }] }, finishReason: 'MAX_TOKENS' }] }, stage), 'cut');
+});

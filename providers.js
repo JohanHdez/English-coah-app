@@ -316,11 +316,19 @@ export function buildChat(id, { system, user, model, maxTokens, schema, base, st
   return { url, init: { method: 'POST', headers: json, body: JSON.stringify(body) } };
 }
 
-export function parseChat(id, json) {
+export function parseChat(id, json, stage = '[coach]') {
   if (id === 'anthropic') {
     return (json?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
   }
-  if (id === 'gemini') return geminiText(json);
+  if (id === 'gemini') {
+    const text = geminiText(json);
+    const candidate = json?.candidates?.[0];
+    const reason = candidate ? candidate.finishReason : json?.promptFeedback?.blockReason || 'sin respuesta';
+    const stopped = !reason || reason === 'STOP' || reason === 'FINISH_REASON_UNSPECIFIED' || (reason === 'MAX_TOKENS' && text);
+    if (!candidate || !stopped) throw new Error(`${stage} Gemini bloqueó esta respuesta (${reason}).`);
+    if (!text) throw new Error(`${stage} Gemini no devolvió texto.`);
+    return text;
+  }
   const content = json?.choices?.[0]?.message?.content;
   return typeof content === 'string' ? content.trim() : '';
 }
@@ -494,5 +502,5 @@ export async function callChat(settings, { system, user, maxTokens, schema, sign
     retries,
     timeoutMs,
   });
-  return parseChat(id, json);
+  return parseChat(id, json, stage);
 }
