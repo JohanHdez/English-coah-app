@@ -40,17 +40,40 @@ function liveLangFor(lang) {
   return lang === 'es' ? 'es-ES' : 'en-US';
 }
 
+// A worker that dies (out of memory on a phone) answers nothing: without a bound
+// the label chain would wait forever while uploads kept sending audio. The bound
+// is on the worker's silence, not on each call, because calls queue behind each
+// other in the worker and a backlog is not a crash; a single embedding takes
+// well under a second per second of speech.
+const EMBED_SILENCE_MS = 15000;
+
 // `timings` (loopback harness only) receives each embedding's round trip.
 function createEmbedClient(worker, timings) {
   let seq = 0;
   const pending = new Map();
+  let watchdog = null;
+  function failAll(message) {
+    clearTimeout(watchdog);
+    watchdog = null;
+    const waiting = [...pending.values()];
+    pending.clear();
+    for (const p of waiting) p.reject(new Error(message));
+  }
+  function arm() {
+    clearTimeout(watchdog);
+    watchdog = pending.size ? setTimeout(() => failAll('[huella] El modelo de voz no respondió a tiempo.'), EMBED_SILENCE_MS) : null;
+  }
   worker.addEventListener('message', ({ data }) => {
     if (data.id === undefined) return;
     const p = pending.get(data.id);
     if (!p) return;
     pending.delete(data.id);
+    arm();
     if (data.type === 'vector') p.resolve(data.vector);
     else if (data.type === 'error') p.reject(new Error(data.message));
+  });
+  worker.addEventListener('error', (event) => {
+    failAll(`[huella] El modelo de voz se detuvo: ${event.message || 'error del worker'}.`);
   });
   return function embed(samples) {
     const id = seq++;
@@ -61,6 +84,7 @@ function createEmbedClient(worker, timings) {
         resolve: (v) => { timings?.push({ ms: performance.now() - t0, seconds }); resolve(v); },
         reject,
       });
+      if (pending.size === 1) arm();
       const copy = samples.slice();
       worker.postMessage({ type: 'embed', id, samples: copy }, [copy.buffer]);
     });
@@ -498,6 +522,7 @@ export function renderMeeting(root, { settings, onEvent }) {
         }
       };
       worker.addEventListener('message', onMsg);
+      worker.addEventListener('error', (event) => reject(new Error(`[huella] El modelo de voz se detuvo: ${event.message || 'error del worker'}.`)), { once: true });
     });
     worker.postMessage({ type: 'init', base: new URL('../vendor/', import.meta.url).href, slowdown: window.__ec?.cpuSlowdown });
   }
@@ -557,10 +582,14 @@ export function renderMeeting(root, { settings, onEvent }) {
   }
 
   async function requestWakeLock() {
+    const epoch = captureEpoch;
     if (!('wakeLock' in navigator)) { if (!stopping && !destroyed) warnNoWakeLock(); return; }
     try {
-      wakeLock = await navigator.wakeLock.request('screen');
-      if (stopping || destroyed) { wakeLock.release().catch(() => {}); wakeLock = null; return; }
+      const lock = await navigator.wakeLock.request('screen');
+      // «Terminar» and «Nueva reunión» both move the epoch: a lock granted after
+      // either belongs to no meeting, and would keep the screen on after the next one.
+      if (stopping || destroyed || epoch !== captureEpoch) { lock.release().catch(() => {}); return; }
+      wakeLock = lock;
       if (wakeLockWarning) setRecordingStatus();
       wakeLock.addEventListener('release', () => { if (running) warnNoWakeLock(); });
     } catch {
@@ -587,7 +616,7 @@ export function renderMeeting(root, { settings, onEvent }) {
         onSegment: (seg) => {
           if (discarded) return;
           previewLane?.closed(seg.startedAt);
-          session.segment(seg);
+          session?.segment(seg);
         },
         onPreview: (seg) => previewLane?.offer(seg),
         // The worker runs one pass at a time: a lane rebuilt by pause/resume must not
