@@ -529,12 +529,14 @@ async function main() {
 
     // Final review, I3: once «Terminar» has finished, Ajustes can delete the stored
     // conversation, and nothing on the screen underneath writes it back.
+    await waitFor(() => bubbleCount(chrome, session).then((n) => n > 0), { timeoutMs: 60000, everyMs: 500, label: 'a bubble in the new meeting' });
     await tap(chrome, session, '.meeting .controls .stop-meeting');
     await waitFor(
       () => chrome.evaluate(session, "document.querySelector('.meeting .status')?.textContent === 'Reunión terminada.'"),
       { timeoutMs: DRAIN_TIMEOUT_MS + 5000, label: 'the second «Terminar» to complete' },
     );
     const storedBeforeDelete = await chrome.evaluate(session, "import('./store.js').then((m) => m.get('lastTranscript')).then((t) => t?.entries?.length ?? -1)");
+    if (storedBeforeDelete < 1) throw new Error(`[smoke] nothing was stored to delete: ${storedBeforeDelete}`);
     await chrome.evaluate(session, "document.getElementById('settingsBtn').click();");
     await waitFor(() => chrome.evaluate(session, "document.querySelector('#overlay .screen.settings') != null"), { label: 'the settings overlay after «Terminar»' });
     const deleteAfterStop = await chrome.evaluate(session, `(() => {
