@@ -38,8 +38,11 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
   allows). The CSP `connect-src` in `index.html` lists exactly the providers' hosts plus loopback
   over `http` and the model hosts — no `https:` wildcard; `providers.test.js` checks it. It is a
   `<meta>` tag, so it binds the page only: a dedicated worker takes its CSP from its own response
-  headers, so `embed-worker.js` and `preview-worker.js` are bound by their code (nothing in them
-  uploads), not by the CSP. Claude has no audio input: it is offered for chat only.
+  headers. `tools/serve.mjs` sends the same policy as a `Content-Security-Policy` header (read from
+  the meta, so there is one source), and the embed worker, the Whisper preview worker and the service
+  worker run under it unchanged (measured 2026-10-10: smoke and `--live=preview`, no console errors).
+  A static host must send the same header for workers to be bound by it; until one does,
+  `embed-worker.js` and `preview-worker.js` are bound by their code (nothing in them uploads). Claude has no audio input: it is offered for chat only.
 - The service worker (`sw.js`) never caches audio, POST requests, or cross-origin responses. It
   precaches the app shell, and keeps same-origin `vendor/` files cache-first in their own
   versioned cache (`ec-vendor-v1`, filled on first use — bump it when `vendor/` is replaced);
@@ -63,7 +66,7 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 | `lib/segmenter.js` `lib/stitch.js` `lib/queue.js` `lib/langid.js` `lib/live.js` `lib/coach.js` `lib/phrasebook.js` + tests | Copied from the extension, unchanged except import paths, `lib/live.js`'s result joining, and `lib/coach.js`, whose network layer was replaced by `providers.js` (see `docs/ORIGIN.md`) | 1, P2-4 |
 | `vendor/` | transformers.js + ONNX Runtime Web, copied | 1 |
 | `recorder-worklet.js` | Copied: 100 ms blocks with RMS | 1 |
-| `tools/serve.mjs` | Local static server (localhost is a secure context, so the mic works) | 1 |
+| `tools/serve.mjs` + `tools/serve.test.js` | Local static server (localhost is a secure context, so the mic works); sends the index.html CSP as a response header | 1 |
 | `tools/check.mjs` | The gate | 1 |
 | `tools/icons.mjs` | Writes the PNG icons with `zlib` | 1 |
 | `index.html` `app.css` `app.js` | Shell and screens | 1 (shell), 6 |
@@ -205,6 +208,8 @@ pipeline's labels and timing, never Whisper's accuracy.
     120 MB Whisper lane does not start.
   - The smoke timing flake (Task 1) was never reproduced; re-check it now that runs go under
     `caffeinate -i`.
+  - The CSP header is sent only by `tools/serve.mjs`; the deployed host (none chosen yet) must send the
+    same policy, or the workers stay bound by their code alone.
   - Closed, not a bug: a split's parts go to the front of the upload queue, but they belong to a
     segment captured before everything queued behind them, so the cap's `shift()` still drops the
     oldest audio.

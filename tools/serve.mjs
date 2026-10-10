@@ -3,6 +3,7 @@
 // in-process rather than spawning a CLI.
 
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +21,13 @@ const CONTENT_TYPES = {
   '.wav': 'audio/wav',
   '.txt': 'text/plain',
 };
+
+function policyOf(root) {
+  const html = readFileSync(join(root, 'index.html'), 'utf8');
+  const match = html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)"/);
+  if (!match) throw new Error('[serve] index.html has no Content-Security-Policy meta.');
+  return match[1];
+}
 
 function contentTypeFor(path) {
   return CONTENT_TYPES[extname(path).toLowerCase()] || 'application/octet-stream';
@@ -43,6 +51,7 @@ function resolveSafe(root, urlPath) {
 
 export function serve({ root, port = 5173, host = '127.0.0.1' } = {}) {
   const absRoot = resolve(root);
+  const csp = policyOf(absRoot);
   const server = createServer(async (req, res) => {
     const target = resolveSafe(absRoot, req.url || '/');
     if (!target) {
@@ -57,6 +66,7 @@ export function serve({ root, port = 5173, host = '127.0.0.1' } = {}) {
       res.writeHead(200, {
         'Content-Type': contentTypeFor(filePath),
         'Cache-Control': 'no-store',
+        'Content-Security-Policy': csp,
       });
       res.end(body);
     } catch {

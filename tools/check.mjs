@@ -82,6 +82,7 @@ const testFiles = [
   ...glob('lib', /\.test\.js$/),
   ...glob('.', /\.test\.js$/),
   ...glob('e2e', /\.test\.js$/),
+  ...glob('tools', /\.test\.js$/),
 ];
 
 let testCount = 0;
