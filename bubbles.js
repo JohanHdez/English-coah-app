@@ -75,6 +75,9 @@ export function mayInstallCapture({ destroyed, epoch, currentEpoch }) {
 export const STALL_MS = 3000;
 export const STALL_CHECK_MS = 2000;
 
-export function captureStalled({ lastBlockAt, now, paused }) {
-  return !paused && now - lastBlockAt >= STALL_MS;
+// A page returning from the background has had its timers and worklet messages
+// throttled, so lastBlockAt is stale even when the capture recovered: the window
+// restarts at the return (resumedAt) and a block arriving inside it moves lastBlockAt past it.
+export function captureStalled({ lastBlockAt, now, paused, resumedAt = -Infinity }) {
+  return !paused && now - Math.max(lastBlockAt, resumedAt) >= STALL_MS;
 }

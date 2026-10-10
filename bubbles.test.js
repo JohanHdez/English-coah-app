@@ -152,3 +152,15 @@ test('captureStalled: no block for STALL_MS while recording is a stall', () => {
 test('captureStalled: a paused meeting is never reported as stalled', () => {
   assert.equal(captureStalled({ lastBlockAt: 10000, now: 60000, paused: true }), false);
 });
+
+test('captureStalled: returning from the background grants one fresh window before a stall', () => {
+  const base = { lastBlockAt: 10000, paused: false };
+  assert.equal(captureStalled({ ...base, now: 600000, resumedAt: 600000 }), false);
+  assert.equal(captureStalled({ ...base, now: 600000 + STALL_MS - 1, resumedAt: 600000 }), false);
+  assert.equal(captureStalled({ ...base, now: 600000 + STALL_MS, resumedAt: 600000 }), true);
+});
+
+test('captureStalled: a block arriving after the return restarts the window from that block', () => {
+  assert.equal(captureStalled({ lastBlockAt: 601000, now: 601000 + STALL_MS - 1, paused: false, resumedAt: 600000 }), false);
+  assert.equal(captureStalled({ lastBlockAt: 601000, now: 601000 + STALL_MS, paused: false, resumedAt: 600000 }), true);
+});

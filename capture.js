@@ -77,6 +77,7 @@ export async function startCapture({ onSegment, onPreview, canPreview, onLevel, 
     const segmenter = new Segmenter('mixed', onSegment || (() => {}), undefined, { onPreview, canPreview });
     let paused = false;
     let lastBlockAt = performance.now();
+    let resumedAt = -Infinity;
     worklet.port.onmessage = ({ data }) => {
       lastBlockAt = performance.now();
       if (onLevel) onLevel(data.rms);
@@ -95,7 +96,10 @@ export async function startCapture({ onSegment, onPreview, canPreview, onLevel, 
           && stream.getAudioTracks().every((track) => track.readyState === 'live');
       },
       stalled() {
-        return captureStalled({ lastBlockAt, now: performance.now(), paused });
+        return captureStalled({ lastBlockAt, now: performance.now(), paused, resumedAt });
+      },
+      returned() {
+        resumedAt = performance.now();
       },
       stop() {
         // Whatever the learner was saying when Stop was pressed must still
