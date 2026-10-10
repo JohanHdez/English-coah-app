@@ -6,8 +6,8 @@ or in the extension is ported by hand; the two do not share history.
 
 | File | Source path | Commit |
 |---|---|---|
-| `lib/segmenter.js` | `segmenter.js` | `ded2c34` |
-| `lib/segmenter.test.js` | `segmenter.test.js` | `ded2c34` |
+| `lib/segmenter.js` | `segmenter.js` | `ded2c34` (modified, see note below) |
+| `lib/segmenter.test.js` | `segmenter.test.js` | `ded2c34` (one test added, see note below) |
 | `lib/stitch.js` | `stitch.js` | `ded2c34` |
 | `lib/stitch.test.js` | `stitch.test.js` | `ded2c34` |
 | `lib/queue.js` | `queue.js` | `ded2c34` |
@@ -22,15 +22,36 @@ or in the extension is ported by hand; the two do not share history.
 | `vendor/ort-wasm-simd-threaded.wasm` | `vendor/ort-wasm-simd-threaded.wasm` | `ded2c34` |
 | `vendor/ort-wasm-simd-threaded.asyncify.mjs` | `vendor/ort-wasm-simd-threaded.asyncify.mjs` | `ded2c34` |
 | `vendor/ort-wasm-simd-threaded.asyncify.wasm` | `vendor/ort-wasm-simd-threaded.asyncify.wasm` | `ded2c34` |
-| `e2e/cdp.mjs` | `e2e/cdp.mjs` | `ded2c34` |
+| `e2e/cdp.mjs` | `e2e/cdp.mjs` | `ded2c34` (modified, see note below) |
 | `e2e/mock-groq.mjs` | `e2e/mock-groq.mjs` | `ded2c34` |
 | `lib/coach.js` | `coach.js` | `ded2c34` (modified, see note below) |
-| `lib/coach.test.js` | `coach.test.js` | `ded2c34` (adapted, see note below) |
+| `lib/coach.test.js` | `coach.test.js` | `ded2c34` (adapted and extended, see note below) |
 | `lib/phrasebook.js` | `phrasebook.js` | `ded2c34` |
 | `lib/phrasebook.test.js` | `phrasebook.test.js` | `ded2c34` |
 | `preview-worker.js` | `worker.js` | `ded2c34` (rewritten: its WebGPU load ladder only, see `live-lane.js` for the preview lane's rules from `offscreen.js`) |
 | `LICENSE` | `LICENSE` | `ded2c34` |
 | `THIRD-PARTY-NOTICES.md` | `THIRD-PARTY-NOTICES.md` | `ded2c34` |
+
+## `lib/segmenter.js`: three changes, the extension's behaviour unchanged by default
+
+Diffed against `ded2c34` on 2026-10-10:
+
+- `voicedThreshold(floor)` and `pushFloor(state, rms)` are exported (Phase 1, the enrollment's voiced gate): the
+  adaptive noise floor and the 2.5× / 0.008 voicing rule moved out of `push()` unchanged, so
+  `enroll-audio.js` judges a block by the same rule. `push()` calls `pushFloor(this, rms)`.
+- A `silenceMs` option (Phase 3, Task 1): `opts.silenceMs ?? SILENCE_MS` replaces the constant in
+  the closing check. The default stays the extension's 700 ms; `capture.js` passes
+  `MIXED_SILENCE_MS` (450 ms) because both voices share one track here, and `e2e/speakers.mjs`
+  passes the same constant.
+- `lib/segmenter.test.js` gained one test: «silenceMs closes a phrase on a shorter pause without
+  changing the default».
+
+Both changes are worth porting back only if the extension needs them; the option is inert there.
+
+## `e2e/cdp.mjs`: no autoplay flag (Phase 1 review fixes, 2026-10-02)
+
+`--autoplay-policy=no-user-gesture-required` is removed from Chrome's launch flags, so a meeting
+whose AudioContext is not created inside a real tap fails in the harness as it would for a user.
 
 ## `lib/live.js`: results joined with a space (Phase 2, Task 7, fix round 1)
 
@@ -100,6 +121,13 @@ Kept as copied: every prompt, `parseReply`, `parseJsonLoose`, `runsOf`, `turnsTo
   add the best passages (BM25, `lib/passages.js`) up to `DOCUMENTS_MAX_CHARS` = 3000 after the profile and the
   context, and nothing when none is enabled or none scores. `askReport` does not use them (Phase 3, Task 4). Document text is neutralised (`neutralise`): any line
   naming the block's delimiters loses its dashes, and the header says the content is data, never instructions.
+  Phase 3 rules, all PWA-only (the extension has no documents): enabled passages totalling ≤ 3000
+  characters are sent whole with no search; otherwise the best BM25 matches, whole, until the cap; when
+  nothing scores, the first passage of each enabled document. `neutralise` runs on the picked passages
+  only, after selection. The BM25 index is kept in a one-entry memo keyed by the enabled documents'
+  `id:passageCount` list (records are never edited in place, so adding, toggling or deleting one changes
+  the key; a document without an id is never cached): at 10 × 200 000 characters a cold «Respuesta»
+  spent 121–137 ms (median, two runs) building it and a warm one 2.1–2.5 ms searching (`node e2e/docs-reply.mjs --max`).
 - `CoachError` messages carry the `[coach]` stage prefix.
 - `askReply`/`askReport` take two optional extras: `signal` and `chat` (defaults to `callChat`; the tests
   inject a stub).
@@ -120,6 +148,10 @@ language; askReport marks the transcript partial when a turn is clipped; askRepo
 transcript when same-speaker turns merge. Added (7): the `callChat` request of `askReply` and
 `askReport` (system, user, schema, ceiling, stage), schema withheld per provider, thinking ceiling, an
 OpenAI request through the real layer, the missing-key error, and the no-learner-turns refusal.
+Added in Phase 3 (Task 4 and the final fix wave): the documents block — passages after profile and
+context, disabled documents never sent, no documents leaves the prompt byte-for-byte, short documents
+sent whole, the opening passages when nothing scores, the cap, `documentsQuery`, delimiter
+neutralisation (whole and searched), and the cached index following add/toggle/delete.
 `lib/phrasebook.js` and `lib/phrasebook.test.js` are verbatim.
 
 ## `vendor/pdfjs/`: PDF.js from npm (Phase 3, Task 2)

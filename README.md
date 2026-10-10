@@ -9,7 +9,8 @@ and context, and a closing report.
 
 The product is Spanish (every label and error the user sees); the repository is English. The
 approved spec is `docs/2026-09-29-plan.md` (Spanish); the phase 1 and 2 plans are
-`docs/2026-09-29-phase1-plan.md` and `docs/2026-10-09-phase2-plan.md`.
+`docs/2026-09-29-phase1-plan.md` and `docs/2026-10-09-phase2-plan.md`; Phase 3 (fewer mixed
+bubbles, «Mis documentos») is planned in `.superpowers/sdd/2026-10-10-phase3-plan/`.
 
 ## Who it is for
 
@@ -63,7 +64,7 @@ What each provider receives:
 | Job | Goes to | What it receives |
 |---|---|---|
 | Transcripción | The provider chosen for transcription (Groq, OpenAI, Gemini, or your local server) | Audio segments of the meeting, as WAV, with the language when known. |
-| Traducción y coach | The provider chosen for chat (any of the five) | Text only: the other speaker's sentences for translation (when the browser has no Translator of its own); for «Respuesta» and the report, the conversation so far plus «Tu perfil» and «Contexto de hoy». |
+| Traducción y coach | The provider chosen for chat (any of the five) | Text only: the other speaker's sentences for translation (when the browser has no Translator of its own); for «Respuesta» and the report, the conversation so far plus «Tu perfil» and «Contexto de hoy»; for «Respuesta» only, up to 3000 characters of your enabled documents (see «Mis documentos»). |
 
 Claude has no audio input, so it is offered for chat only. Each key is sent only to its own
 provider's host. The voice print and the live line's text never leave the device.
@@ -97,15 +98,41 @@ chat provider chosen in «Ajustes» («Traducción y coach»); it receives text 
 
 The coach prompts and limits are copied from the extension (`docs/ORIGIN.md`).
 
+### «Mis documentos»
+
+Add your CV or other files in «Ajustes» (also from the settings overlay during a meeting): PDF,
+DOCX, TXT or MD. The file is read on the device and is never uploaded or stored — only its
+extracted text, cut into passages, is kept in IndexedDB. There is no OCR: a scanned PDF gives «El
+documento no tiene texto (¿es un escaneo?)». Each document has «Usar en las reuniones» to switch it
+on or off and «Borrar» to remove it.
+
+**What is sent.** Each time you press «Respuesta» with any document switched on, up to **3000
+characters** of your enabled documents go to the chat provider you chose, together with your profile
+and notes:
+
+- all of it, when the enabled documents total 3000 characters or less (a short CV goes whole, related
+  to the question or not);
+- otherwise the passages that best match the other speaker's last turn and the two turns before it
+  (BM25 over words, with a light English/Spanish stemmer), whole, until the cap;
+- if nothing matches, the opening passage of each enabled document.
+
+Never for the closing report, the translation or the transcription; never the file itself. Switch a
+document off to stop sending it. The consent screen and «Mis documentos» say the same.
+
+**Limits.** 10 documents, 2 MB per file, 200 000 characters of text each, 100 pages per PDF, a 60 s
+deadline to read a PDF, 3000 characters per «Respuesta». Password-protected PDFs are refused. Of a
+DOCX only `word/document.xml` is read (no headers, footers, footnotes or comments).
+
 ## Privacy
 
 | Stays on the device | Goes out |
 |---|---|
 | Every provider's API key and your voice print (IndexedDB). The voice print is never sent anywhere. | Audio segments of the meeting go to the transcription provider you chose, using your own key, sent only to that provider's host (or your local server) — while the meeting runs, and for up to 35 s after «Terminar», so that what was already recorded still reaches the transcript; anything left after that is dropped and uploads still in flight are cancelled. The consent screen and «Ajustes» name who receives the audio and who the text. |
 | The last conversation's transcript, with its Spanish translations (IndexedDB), until you delete it in «Ajustes» («Borrar la conversación guardada», available once the meeting has ended) or start a new meeting. | |
+| «Mis documentos»: the extracted text of each document, as passages (IndexedDB) — never the file. It stays until you press «Borrar» on that document or clear the site's data; «Borrar mi huella de voz» and «Borrar la conversación guardada» leave it untouched. | With any document switched on, each «Respuesta» sends up to 3000 characters of the enabled documents to the chat provider you chose: whole when they total 3000 or less, otherwise the passages most related to the question (the opening passages if none is). Never for the report, the translation or the transcription. |
 | Speaker embeddings: computed in the browser with the WeSpeaker model (WASM). | The first use downloads the speaker model (6.7 MB) from Hugging Face and the app's runtime (25 MB) from the app's own host; both are cached. |
 | Translation, when the browser has its own Translator (Chrome 138+). | Without it, translation falls back to the chat provider you chose, with the other speaker's text. |
-| The live line («Hablando ahora…») uses the browser's on-device recognition («Instalar reconocimiento de voz» downloads it once, on your tap). Without it, on a device with WebGPU, a local Whisper model (whisper-tiny.en, about 120 MB from Hugging Face the first time) shows it instead: on by default on a computer; on a phone or tablet it downloads nothing until you turn on «Texto en vivo con Whisper local» in «Ajustes» (and it can be turned off there on a computer). Neither is ever a cloud recogniser, and the live text is never stored or sent. Otherwise, or in a bilingual meeting, the screen says the live line is off. | Nothing else. The service worker caches the app shell and `vendor/`, never audio or provider responses. |
+| The live line («Hablando ahora…») uses the browser's on-device recognition («Instalar reconocimiento de voz» downloads it once, on your tap). Without it, on a device with WebGPU, a local Whisper model (whisper-tiny.en, about 120 MB from Hugging Face the first time) shows it instead: on by default on a computer; on a phone or tablet it downloads nothing until you turn on «Texto en vivo con Whisper local» in «Ajustes» (and it can be turned off there on a computer). Neither is ever a cloud recogniser, and the live text is never stored or sent. Otherwise, or in a bilingual meeting, the screen says the live line is off. | Nothing else. The service worker caches the app shell and `vendor/` (pdf.js on first use), never audio, a document or provider responses. |
 
 **When the provider struggles.** A transcription that fails with 429, a 5xx or a dropped connection is
 retried twice (1 s, then 2 s, or the server's `Retry-After`, capped at 8 s); other 4xx are not
@@ -150,7 +177,9 @@ A repeat of the old code gave 21/65. The spec's Phase 1 criterion is < 10 %: it 
 Part of what remains is the split itself: a split segment's whole upload has usually been sent
 before the scan finishes, and it counts as an audio-mixed request although it never reaches a
 bubble; counting only requests that reached a bubble, 7/45 (16 %) still hold both voices, against
-9/44 before. Whether to accept it or keep working on the cut is the owner's decision.
+9/44 before. Most of the gain is the 450 ms close: 450 ms alone gave 14/62; the mid-hop cut and
+cutting at every change of voice take it from 14 to 11, within run-to-run noise, and are kept as
+correctness fixes. Whether to accept it or keep working on the cut is the owner's decision.
 
 **The whole app** (`node e2e/run.mjs`, room condition, Groq stand-in with a 0.9 s delay, accuracy
 weighted by words):
@@ -209,6 +238,20 @@ where it says the real Groq):
     · 0 failing.
   The mixed-segment criterion (< 10 %) is still not met.
 
+**Phase 3, «Mis documentos»** (measured 2026-10-10; Node, synthetic CV and five interview
+questions, local chat stand-in, `node e2e/docs-reply.mjs [--cv-only|--max]`):
+
+- The CV alone: 5/5 questions got the passage that answers them (the CV is sent whole).
+- The CV plus 80 unrelated notes: 4/5. The miss is «Where did you study?» against a CV that says
+  «Education»: matching is by words, not meaning.
+- At the limits, 10 documents × 200 000 characters (3432 passages, 2.06 M characters): the first
+  «Respuesta» after a document is added, toggled or deleted builds the search index, median
+  121–137 ms (two runs); every later one reuses it, median 2.1–2.5 ms. Reading the records from IndexedDB
+  copies them (a structured clone of ~5 ms in Node at this size). Before the cache, every tap paid
+  117–692 ms on this Mac depending on load.
+- PDF extraction, 2 pages: 158–427 ms on first use (1073 ms in a fresh profile, pdf.js loading), 70 ms
+  afterwards.
+
 ## Known limits
 
 - Short turns: a one-word reply sharing a segment with the other voice is lost or mislabelled.
@@ -240,6 +283,13 @@ where it says the real Groq):
 - Not measured: a real phone, a real voice beyond the owner's one desktop test, and real OpenAI,
   Gemini or Claude calls. Only Groq was called for real, for translation latency.
 - `gpt-4o-mini-transcribe` is announced for removal on 2027-02-26.
+- «Mis documentos» matches words, not meaning: a question phrased differently from your CV («study»
+  vs «Education») can miss the passage in a long set of documents.
+- The first PDF added while offline fails with «No se pudo leer el PDF.»: pdf.js is cached on first
+  use.
+- Text hidden in a PDF (white, or off the page) is read like any other text and can be sent with a
+  «Respuesta».
+- Bilingual meetings were not re-measured since phrases close after 450 ms of silence.
 
 ## Layout
 

@@ -7,6 +7,7 @@ manual "I'm speaking" mode. It reuses the pure modules of the English Coach Chro
 (`/Users/octopus/Downloads/english-coach`) by copy, not by link — see `docs/ORIGIN.md`.
 
 Full spec: `docs/2026-09-29-plan.md` (Spanish). Phase 1 plan: `docs/2026-09-29-phase1-plan.md`.
+Phase 3 plan, task reports and final review: `.superpowers/sdd/2026-10-10-phase3-plan/`.
 
 ## Constraints
 
@@ -18,8 +19,9 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 - **Never modify anything under `/Users/octopus/Downloads/english-coach`** (the extension).
   Read it, and copy from a named commit with
   `git -C /Users/octopus/Downloads/english-coach show <commit>:<path> > <dst>`.
-- `vendor/` holds copied third-party code (transformers.js + ONNX Runtime Web); never edit it,
-  replace it wholesale from upstream instead.
+- `vendor/` holds copied third-party code (transformers.js + ONNX Runtime Web, and pdf.js under
+  `vendor/pdfjs/`, `pdfjs-dist` 6.4.299); never edit it, replace it wholesale from upstream instead
+  and update `docs/ORIGIN.md`.
 - Pure logic stays pure: `lib/*.js` and (from Task 2) `speaker.js`, `session.js` import nothing
   from the DOM or `chrome`/browser-only APIs and take side effects as injected parameters, so
   they run unmodified under `node --test`. Keep new logic on that side of the line.
@@ -55,7 +57,26 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
   `element.click()` from a script carries no user activation and ignores what covers the
   element — it hid a closed overlay that covered the whole app until 2026-10-02.
 - User-visible errors are prefixed with the stage that produced them: `[micrófono]`, `[huella]`,
-  `[transcripción]`, `[traducción]`, `[coach]`; the provider is named in the message.
+  `[transcripción]`, `[traducción]`, `[coach]`, `[documentos]`, `[almacenamiento]`; the provider is
+  named in the message.
+- «Mis documentos» (Phase 3):
+  - Documents reach only `askReply` — never `askReport`, translation or transcription. The only
+    request-path reader of `store.listDocuments()` is `ui/coach.js`'s «Respuesta».
+  - Never store file bytes: `docs-record.js`'s `makeRecord` keeps name, type, size, chars, addedAt,
+    enabled and passages. A record is never edited in place except `enabled` — the documents index
+    cache in `lib/coach.js` is keyed by the enabled documents' `id:passageCount`, so a document whose
+    passages changed under the same id would be searched stale.
+  - Document text is untrusted: names go through `textContent` (and `setAttribute` for aria-labels),
+    passages through `neutralise` before the prompt, and the block's two delimiter lines are the only
+    ones.
+  - pdf.js runs with `isEvalSupported: false`, `disableFontFace: true` and no remote resource URL
+    (`cMapUrl`, `standardFontDataUrl`, `wasmUrl`); its module worker loads from `vendor/pdfjs/` under
+    `worker-src 'self'`.
+  - Any parser added must be linear and capped before any regex runs over its input (80 000 spaces
+    took 9.9 s through `\s*\n\s*`).
+  - The consent text and the «Mis documentos» hint share `DOCUMENTS_SENT` (`docs-record.js`) and must
+    say what `documentsBlock` sends. Phase 2 learners never see the consent screen again, so the hint
+    is the disclosure they read.
 - Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Implementers never dispatch subagents; review is the controller's job.
 
@@ -63,7 +84,7 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 
 | Path | Responsibility | Task |
 |---|---|---|
-| `lib/segmenter.js` `lib/stitch.js` `lib/queue.js` `lib/langid.js` `lib/live.js` `lib/coach.js` `lib/phrasebook.js` + tests | Copied from the extension, unchanged except import paths, `lib/live.js`'s result joining, `lib/segmenter.js`'s `silenceMs` option (default unchanged, P3-1), and `lib/coach.js`, whose network layer was replaced by `providers.js` (see `docs/ORIGIN.md`) | 1, P2-4, P3-1 |
+| `lib/segmenter.js` `lib/stitch.js` `lib/queue.js` `lib/langid.js` `lib/live.js` `lib/coach.js` `lib/phrasebook.js` + tests | Copied from the extension, unchanged except import paths, `lib/live.js`'s result joining, `lib/segmenter.js`'s exported `voicedThreshold` / `pushFloor` and its `silenceMs` option (default unchanged, P3-1), and `lib/coach.js`, whose network layer was replaced by `providers.js` (see `docs/ORIGIN.md`) | 1, P2-4, P3-1 |
 | `vendor/` | transformers.js + ONNX Runtime Web, copied | 1 |
 | `recorder-worklet.js` | Copied: 100 ms blocks with RMS | 1 |
 | `tools/serve.mjs` + `tools/serve.test.js` | Local static server (localhost is a secure context, so the mic works); sends the index.html CSP as a response header | 1 |
@@ -84,6 +105,14 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 | `e2e/mock-groq.mjs` `e2e/run.mjs` `e2e/harness.mjs` `e2e/score.mjs` `e2e/smoke.mjs` | The whole app in Chrome with a fake mic and a stand-in for every provider's shapes, scored per cue; a UI smoke test | 6, 7, P2-3 |
 | `live-lane.js` + `live-lane.test.js` `preview-worker.js` | Which live line a meeting gets (on-device Web Speech, the install button, the local Whisper preview lane on WebGPU, or a note saying why none) and the preview lane's stitching and slowness rule; the Whisper worker | P2-7 |
 | `lib/markdown.js` + `lib/markdown.test.js` `ui/report.js` | The closing report: a tiny safe markdown renderer (nodes only, never `innerHTML`) and the report block under «Terminar» | P2-6 |
+| `docs-extract.js` + test | Text out of a file on the device: PDF through pdf.js (100-page cap, 60 s deadline), DOCX by reading `word/document.xml` out of the zip (`MAX_XML_BYTES` 8 MB inflate cap, encrypted entries refused), TXT/MD as UTF-8; `LIMITS`; `[documentos]` errors; linear parsing, no regex over unbounded whitespace | P3-2 |
+| `docs-record.js` + test | The stored record (never the bytes), the 10-document room check, `DOCUMENTS_SENT` (the privacy sentence) | P3-2, P3-3 |
+| `lib/passages.js` + test | Pure: split into ~700-character passages (100 overlap), tokenise and stem English/Spanish, BM25 | P3-2, P3-4 |
+| `ui/documents.js` | «Mis documentos» in «Ajustes»: add, switch, delete | P3-3 |
+| `store.js` | Also the `documents` object store (DB_VERSION 2, keyPath `id`); `onblocked` → «[almacenamiento] Cierra las otras pestañas…», `onversionchange` closes, `tx.onabort` and QuotaExceededError settle every write | P3-3 |
+| `lib/coach.js` documents | `documentsQuery`, `documentsBlock` (whole if ≤ 3000, else BM25 picks, else opening passages; index memo), `neutralise`, `DOCUMENTS_MAX_CHARS` | P3-4 |
+| `vendor/pdfjs/` | `pdfjs-dist` 6.4.299, three files, sha256 in `docs/ORIGIN.md`; never edited | P3-2 |
+| `e2e/docs-fixtures.mjs` `e2e/docs-check.mjs` `e2e/docs-reply.mjs` | Synthetic CV (PDF/DOCX/TXT) and broken files; pdf.js in Chrome under the served CSP; «Respuesta» hit rate and search time in Node; the smoke also attaches, toggles and deletes a document and checks the CV reaches the prompt | P3-2, P3-4 |
 | `README.md` `CLAUDE.md` `docs/ORIGIN.md` `docs/BACKLOG.md` | Documentation; the backlog holds requests not yet in a plan | 1, P2-8 |
 
 ## Runtime contexts
@@ -134,6 +163,8 @@ caffeinate -i node e2e/run.mjs Paulina Samantha --live=speech    # live line: on
 caffeinate -i node e2e/run.mjs Paulina Samantha --live=preview   # live line: Web Speech hidden, local Whisper lane (WebGPU)
 caffeinate -i node e2e/run.mjs Paulina Samantha --live=none      # Web Speech hidden, lane off: the baseline for its cost
 caffeinate -i node e2e/run.mjs Paulina Samantha --live=preview --mobile   # a phone (client hints): the lane must not start
+caffeinate -i node e2e/docs-check.mjs                      # pdf.js and the DOCX reader in Chrome under the served CSP
+node e2e/docs-reply.mjs [--cv-only|--max]                  # «Respuesta» with documents: hit rate, search time cold/warm (Node only)
 ```
 
 Names are case-sensitive (`Paulina`, `Mónica`); in zsh quote each pair's names separately, since an
@@ -228,9 +259,11 @@ pipeline's labels and timing, never Whisper's accuracy.
   8 → 4, accuracy 94.8–95.5 % → 98.1–98.7 %, latency p50 1.45–1.82 s → 1.24–1.30 s. Per pair:
   15 %, 18 %, 18 %. Counting only requests that reached a bubble: 9/44 → 7/45. Each option alone
   (mid-hop cut, every change, 450 ms, 550 ms) and the pairs of them are in
-  `.superpowers/sdd/2026-10-10-phase3-plan/task-1-report.md`. Accepting it or working further on
-  the cut is the owner's call. `e2e/speakers.mjs`'s mixed-segment table still runs the Segmenter
-  with the 700 ms default, so it no longer matches the app.
+  `.superpowers/sdd/2026-10-10-phase3-plan/task-1-report.md`. Most of the gain is the 450 ms close
+  (alone: 14/62); the mid-hop cut and every-change splitting take 14 → 11, within run-to-run noise,
+  kept as correctness fixes. The < 10 % criterion is still not met (17 %); accepting it or working
+  further on the cut is the owner's call. `e2e/speakers.mjs` segments with the same
+  `MIXED_SILENCE_MS`.
 - Each segment's upload starts beside its voice print (Phase 2, Task 2), so a 5b split usually
   arrives after the whole segment's transcription has finished: measured 2026-10-09, every split
   (3 of 3, normal and `--throttle=4`) re-uploaded its parts, 21 requests where 18 did before —
@@ -267,6 +300,32 @@ pipeline's labels and timing, never Whisper's accuracy.
 - The default chat models (`openai/gpt-oss-120b` on Groq) are reasoning models; translation now
   uses them instead of Phase 1's `llama-3.1-8b-instant`. Measured on the real Groq (synthetic
   sentences): p50 0.80 s per bubble (`openai/gpt-oss-20b` 0.55 s); the other providers' are not.
+- «Mis documentos», measured 2026-10-10 (`node e2e/docs-reply.mjs`, synthetic CV, five questions):
+  CV alone 5/5 (sent whole); CV + 80 distractor notes 4/5; at the limits (10 × 200 000 characters,
+  3432 passages) the first «Respuesta» after a change builds the index, median 121–137 ms (two runs), later
+  ones 2.1–2.5 ms (Node, this Mac; a phone is slower and this runs on the page's thread). PDF, 2
+  pages: 158–427 ms cold (1073 ms fresh profile), 70 ms warm. Limits: 10 documents, 2 MB, 200 000
+  characters, 100 PDF pages, 60 s per PDF, 3000 characters per «Respuesta». `MIXED_SILENCE_MS` is
+  450 ms against the extension's 700 ms.
+- Retrieval is lexical (BM25 over stemmed words): «Where did you study?» misses a CV's «Education»
+  in a long corpus (4/5).
+- Stemmer quirks (`lib/passages.js`): news→new, speed→spe, sesión/sesiones and lideré/liderar do
+  not meet; "payments"→"pay".
+- Passages overlap by up to 100 characters, so the repeated text counts against the 3000, and a
+  document of ~2700–3000 characters can miss the "send whole" rule.
+- Hidden PDF text (white, off-page) is extracted and can reach the reply prompt verbatim. Containment:
+  plain-text reply, no link sink, CSP images `'self' data:`, the report excluded — worst case a
+  steered suggestion.
+- A FlateDecode bomb inside one PDF content stream cannot be bounded through pdf.js options; only the
+  60 s deadline ends it (the file is the learner's own choice). A DOCX of 1.3 M `<w:p/>` tags costs a
+  linear 430 ms before the character cap stops it.
+- Bilingual meetings (`--lang=multi`) were not re-measured with the 450 ms close; shorter segments
+  give the per-segment language decision less audio (needs a `--real` bilingual run).
+- No «Borrar todos mis documentos»; documents survive «Borrar mi huella de voz», «Borrar la
+  conversación guardada» and re-enrolment (by design; README says so). The first PDF added offline
+  fails: pdf.js is cached on first use.
+- The documents path's Chrome smoke covers attach / toggle / delete, the row names and one prompt
+  assertion only; `store.js`'s blocked/abort/quota paths are not exercised by any test.
 - `gpt-4o-mini-transcribe` (OpenAI's default) is announced for removal on 2027-02-26; its
   replacement `gpt-transcribe` takes `languages` instead of `language` (the adapter sends neither
   for it).
