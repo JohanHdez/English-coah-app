@@ -117,3 +117,21 @@ transcript when same-speaker turns merge. Added (7): the `callChat` request of `
 `askReport` (system, user, schema, ceiling, stage), schema withheld per provider, thinking ceiling, an
 OpenAI request through the real layer, the missing-key error, and the no-learner-turns refusal.
 `lib/phrasebook.js` and `lib/phrasebook.test.js` are verbatim.
+
+## `vendor/pdfjs/`: PDF.js from npm (Phase 3, Task 2)
+
+Not from the extension: copied verbatim from the npm tarball of `pdfjs-dist@6.4.299`
+(`https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.4.299.tgz`). The tarball's sha512 matched
+the registry's `dist.integrity`,
+`sha512-AVl138zALtfaAPvADulE0PZThbYzCBS79nL4pOSL/6Sm/4AH5A21BD9VHt97OlCuzJuCpmeZtAtkinisF4Vb1g==`
+(`shasum` `4a46f5146ac6505564c1a5d472900be4df8bf628`), checked on 2026-10-10 before anything was copied.
+
+| File | Package path | sha256 |
+|---|---|---|
+| `vendor/pdfjs/pdf.min.mjs` | `build/pdf.min.mjs` | `57456c8e0c81e46be31174b499ef77f2b9f5ee46d04412ba627320a36755d4c2` |
+| `vendor/pdfjs/pdf.worker.min.mjs` | `build/pdf.worker.min.mjs` | `9536359f1b8367850d485731ca1d5e45c159a7b7a0912325e539937aa21ceb18` |
+| `vendor/pdfjs/LICENSE` | `LICENSE` | `0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594` |
+
+Nothing else from the package is copied: no source maps, no `cmaps/`, `standard_fonts/`, `wasm/`
+or `iccs/` (text extraction does not need them), no viewer. Replace the three files together
+from a newer tarball, re-check its integrity, and update this table.
