@@ -133,10 +133,24 @@ simulated laptop speaker; every turn tried as the opening; `MATCH_MIN` 0.50, `MA
 A 2 s embedding takes 259 ms p50 / 270 ms p90 in headless desktop Chrome (WASM, one thread).
 
 **Mixed segments — criterion not met, open decision.** Before splitting long segments, 28.5 % of
-segments mixed both voices (the energy segmenter waits 700 ms of silence). The app now splits
-segments of 3 s or more once, by voice windows, and 12–24 % of transcription requests still hold
-both voices (`audio-mixed requests` in `e2e/run.mjs`). The spec's Phase 1 criterion is < 10 %: it is
-**not met**. Whether to accept it or keep working on the cut is the owner's decision.
+segments mixed both voices (the energy segmenter waited 700 ms of silence). Since Phase 3 the app
+closes a phrase after 450 ms of silence (the extension keeps 700 ms: there the two voices arrive on
+separate tracks) and re-scans every segment of 3 s or more by voice windows, cutting at every change
+of voice half a hop into the first window of the new voice. Measured on 2026-10-10 over the three
+room fixtures below, each run under `caffeinate -i`, one at a time:
+
+| Pair | Audio-mixed requests (before → after) | Mixed bubbles | Accuracy (words) | Latency p50 · p90 |
+|---|---|---|---|---|
+| Paulina / Samantha | 7/21 → 3/20 | 3 → 1 | 94.9 → 98.7 % | 1.45 · 6.97 → 1.24 · 4.14 s |
+| Mónica / Daniel | 5/21 → 4/22 | 2 → 1 | 94.8 → 98.1 % | 1.52 · 7.59 → 1.29 · 7.17 s |
+| Paulina / Mónica | 8/22 → 4/22 | 3 → 2 | 95.5 → 98.7 % | 1.82 · 5.91 → 1.30 · 6.75 s |
+| All three | 20/64 (31 %) → 11/64 (17 %) | 8 → 4 | | |
+
+A repeat of the old code gave 21/65. The spec's Phase 1 criterion is < 10 %: it is still **not met**.
+Part of what remains is the split itself: a split segment's whole upload has usually been sent
+before the scan finishes, and it counts as an audio-mixed request although it never reaches a
+bubble; counting only requests that reached a bubble, 7/45 (16 %) still hold both voices, against
+9/44 before. Whether to accept it or keep working on the cut is the owner's decision.
 
 **The whole app** (`node e2e/run.mjs`, room condition, Groq stand-in with a 0.9 s delay, accuracy
 weighted by words):
@@ -198,8 +212,9 @@ where it says the real Groq):
 ## Known limits
 
 - Short turns: a one-word reply sharing a segment with the other voice is lost or mislabelled.
-- Overlapping speech is not separated; a segment of 3 s or more is split at most once, into two
-  parts at the first change of voice, and anything mixed beyond that keeps one label.
+- Overlapping speech is not separated; a segment of 3 s or more is split at every change of voice
+  that lasts at least two 1.5 s windows (0.75 s hop); a shorter turn inside it keeps its
+  neighbour's label.
 - The screen should stay on: the page owns the session, and on most phones a locked screen or a
   backgrounded app stops the microphone (platform behaviour, not measured on a device here). When
   the app comes back it checks the microphone and the audio engine; if capture stopped it says

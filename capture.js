@@ -16,6 +16,13 @@ const DEFAULT_CONSTRAINTS = {
 
 const RESUME_TIMEOUT_MS = 3000;
 
+// The extension's 700 ms waits for a pause between two people on separate
+// tracks; here both voices share one, and a handoff rarely leaves that much
+// silence. Measured 2026-10-10 over the three room fixtures (Phase 3, Task 1):
+// 450 ms alone took audio-mixed requests from 20/64 to 14/62 and 550 ms to
+// 17/63, with no loss of accuracy or bubble latency.
+export const MIXED_SILENCE_MS = 450;
+
 function micError(err) {
   const name = err && err.name;
   if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
@@ -74,7 +81,7 @@ export async function startCapture({ onSegment, onPreview, canPreview, onLevel, 
     // onSegment is optional: enrollment only wants onBlock's raw, ungrouped
     // blocks, and a live Segmenter with no listener would throw the moment a
     // phrase actually closed.
-    const segmenter = new Segmenter('mixed', onSegment || (() => {}), undefined, { onPreview, canPreview });
+    const segmenter = new Segmenter('mixed', onSegment || (() => {}), undefined, { onPreview, canPreview, silenceMs: MIXED_SILENCE_MS });
     let paused = false;
     let lastBlockAt = performance.now();
     let resumedAt = -Infinity;

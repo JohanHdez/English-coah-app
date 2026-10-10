@@ -63,7 +63,7 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 
 | Path | Responsibility | Task |
 |---|---|---|
-| `lib/segmenter.js` `lib/stitch.js` `lib/queue.js` `lib/langid.js` `lib/live.js` `lib/coach.js` `lib/phrasebook.js` + tests | Copied from the extension, unchanged except import paths, `lib/live.js`'s result joining, and `lib/coach.js`, whose network layer was replaced by `providers.js` (see `docs/ORIGIN.md`) | 1, P2-4 |
+| `lib/segmenter.js` `lib/stitch.js` `lib/queue.js` `lib/langid.js` `lib/live.js` `lib/coach.js` `lib/phrasebook.js` + tests | Copied from the extension, unchanged except import paths, `lib/live.js`'s result joining, `lib/segmenter.js`'s `silenceMs` option (default unchanged, P3-1), and `lib/coach.js`, whose network layer was replaced by `providers.js` (see `docs/ORIGIN.md`) | 1, P2-4, P3-1 |
 | `vendor/` | transformers.js + ONNX Runtime Web, copied | 1 |
 | `recorder-worklet.js` | Copied: 100 ms blocks with RMS | 1 |
 | `tools/serve.mjs` + `tools/serve.test.js` | Local static server (localhost is a secure context, so the mic works); sends the index.html CSP as a response header | 1 |
@@ -218,10 +218,19 @@ pipeline's labels and timing, never Whisper's accuracy.
 - Claude is chat-only (no audio input).
 - The speaker model is downloaded from Hugging Face on first use; offline first runs fail.
 - One-word backchannels are lost or mislabelled when they share a segment with the other voice.
-- The split point of segments of 3 s or more is biased up to 0.75 s early.
-- **Open decision:** the spec's Phase 1 criterion "< 10 % mixed segments" is not met. After the
-  split, 12–24 % of transcription requests still hold both voices (`audio-mixed requests` in
-  `e2e/run.mjs`). Not tuned further; accepting it or working on the cut is the owner's call.
+- The split point of segments of 3 s or more is placed half a hop (0.375 s) into the first window
+  of the new voice, so it can miss the change by up to 0.375 s either way.
+- **Open decision:** the spec's Phase 1 criterion "< 10 % mixed segments" is not met. Phase 3,
+  Task 1 (measured 2026-10-10, three room fixtures, Groq stand-in) closes a phrase after 450 ms of
+  silence (`MIXED_SILENCE_MS` in `capture.js`, passed as the Segmenter's `silenceMs`; the
+  extension's default stays 700 ms) and cuts a scanned segment at every surviving change of voice,
+  half a hop into the new run: audio-mixed requests 20/64 (31 %) → 11/64 (17 %), mixed bubbles
+  8 → 4, accuracy 94.8–95.5 % → 98.1–98.7 %, latency p50 1.45–1.82 s → 1.24–1.30 s. Per pair:
+  15 %, 18 %, 18 %. Counting only requests that reached a bubble: 9/44 → 7/45. Each option alone
+  (mid-hop cut, every change, 450 ms, 550 ms) and the pairs of them are in
+  `.superpowers/sdd/2026-10-10-phase3-plan/task-1-report.md`. Accepting it or working further on
+  the cut is the owner's call. `e2e/speakers.mjs`'s mixed-segment table still runs the Segmenter
+  with the 700 ms default, so it no longer matches the app.
 - Each segment's upload starts beside its voice print (Phase 2, Task 2), so a 5b split usually
   arrives after the whole segment's transcription has finished: measured 2026-10-09, every split
   (3 of 3, normal and `--throttle=4`) re-uploaded its parts, 21 requests where 18 did before —

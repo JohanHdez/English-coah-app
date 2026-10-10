@@ -156,10 +156,10 @@ test('a junk transcription produces no bubble', async () => {
   assert.equal(session.transcript().length, 0);
 });
 
-// Step 5b: the segmenter's 700 ms silence gate waits longer than real turn-taking,
+// Step 5b: the segmenter's silence gate waits longer than real turn-taking,
 // so a single segment can straddle a handoff. A segment of 3 s or more is
 // re-scanned in 1.5 s windows (0.75 s hop) and cut where two consecutive windows
-// disagree with the rest.
+// disagree with the rest, half a hop into the first of them.
 test('a 4.5 s segment that switches speaker midway is split at the disagreement', async () => {
   const { events, onEvent } = collector();
   const speakers = createSpeakers(ME_LIKE);
@@ -180,7 +180,7 @@ test('a 4.5 s segment that switches speaker midway is split at the disagreement'
   assert.equal(bs[0].entry.speaker, 'me');
   assert.equal(bs[0].entry.t, 10000, 'the first part keeps the original startedAt');
   assert.equal(bs[1].entry.speaker, 'them');
-  assert.equal(bs[1].entry.t, 10000 + (24000 / 16000) * 1000, 'the second part starts at the split offset');
+  assert.equal(bs[1].entry.t, 10000 + (30000 / 16000) * 1000, 'the second part starts half a hop into the first window of the new voice');
 });
 
 // Fix round 1, finding 2: the previous scan only looked for two consecutive
@@ -207,7 +207,7 @@ test('a leading short turn followed by a longer one still splits, minority first
   assert.equal(bs[0].entry.speaker, 'me');
   assert.equal(bs[0].entry.t, 0);
   assert.equal(bs[1].entry.speaker, 'them');
-  assert.equal(bs[1].entry.t, (24000 / 16000) * 1000);
+  assert.equal(bs[1].entry.t, (30000 / 16000) * 1000);
 });
 
 test('alternating window labels do not explode into a split', async () => {
@@ -353,7 +353,7 @@ test('a split segment still embeds each part in full', async () => {
   audio.fill(-0.5, 24000);
   session.segment({ audio, startedAt: 0, durationMs: 4500, open: false });
   await session.drain();
-  assert.deepEqual(lengths.slice(5), [24000, 48000]);
+  assert.deepEqual(lengths.slice(5), [30000, 42000]);
 });
 
 test('shouldScan: long segments only, and only while the embedding backlog is within real time', () => {
@@ -553,7 +553,7 @@ test('a split replaces a whole-segment upload that already finished, and says so
   session.segment({ audio: splitAudio(), startedAt: 0, durationMs: 4500, open: false });
   await session.drain();
   const texts = session.transcript().map((e) => e.text);
-  assert.deepEqual(texts, ['Part of 24000.', 'Part of 48000.']);
+  assert.deepEqual(texts, ['Part of 30000.', 'Part of 42000.']);
   assert.equal(events.find((e) => e.type === 'labelled').replaced, 'done');
 });
 
@@ -597,7 +597,7 @@ test('a split withdraws a whole-segment upload still waiting, and its parts go f
   await sleep(40);
   hold.resolve();
   await session.drain();
-  assert.deepEqual(seen, [100, 101, 24000, 48000, 102], 'the whole 72000 never uploaded; its parts kept its place');
+  assert.deepEqual(seen, [100, 101, 30000, 42000, 102], 'the whole 72000 never uploaded; its parts kept its place');
   assert.equal(events.find((e) => e.type === 'labelled' && e.durationMs === 4500).replaced, 'waiting');
 });
 
@@ -689,4 +689,66 @@ test('a bilingual meeting with an engine that names no language tags each bubble
   const entries = [...last.values()].sort((a, b) => a.t - b.t);
   assert.deepEqual(entries.map((e) => [e.speaker, e.lang]), [['them', 'es'], ['me', 'en'], ['them', 'es']]);
   assert.deepEqual(session.transcript().map((e) => e.lang), ['es', 'en', 'es']);
+});
+
+// Phase 3, Task 1 (a): a window labelled with the new voice starts at most one
+// hop after the change and the window before it still held the old voice for
+// most of its length, so the change lies within that hop: the cut goes to its
+// middle. The embed here labels a window by the majority of its samples, as a
+// real one roughly does.
+test('a split cuts at the middle of the hop where the voice changes', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const majority = async (audio) => (audio.reduce((n, x) => n + x, 0) > 0 ? ME_LIKE : THEM_LIKE);
+  const session = createSession({ embed: majority, transcribe: fakeTranscribe([{}, {}]), speakers, onEvent });
+
+  // 4.5 s, the voice changes at 29000 samples. Windows at 0, 12000, 24000, …:
+  // [12000, 36000) is mostly the learner, [24000, 48000) mostly the other voice.
+  const audio = new Float32Array(72000).fill(0.5);
+  audio.fill(-0.5, 29000);
+  session.segment({ audio, startedAt: 0, durationMs: 4500, open: false });
+  await session.drain();
+
+  const bs = bubbles(events);
+  assert.deepEqual(bs.map((e) => e.entry.speaker), ['me', 'them']);
+  assert.equal(bs[1].entry.t, ((24000 + 6000) / 16000) * 1000, 'the cut is half a hop after the first window of the new voice');
+});
+
+// (b): every change of voice that survives the two-window minimum cuts the segment.
+test('a segment that changes voice twice is split into three parts', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const session = createSession({ embed: fakeEmbed, transcribe: fakeTranscribe([{}, {}, {}]), speakers, onEvent });
+
+  // 7.5 s = 120000 samples, windows at 0 … 96000. First samples give
+  // [me, me, me, them, them, them, them, me, me].
+  const audio = new Float32Array(120000).fill(0.5);
+  audio.fill(-0.5, 36000, 84000);
+  session.segment({ audio, startedAt: 0, durationMs: 7500, open: false });
+  await session.drain();
+
+  const bs = bubbles(events);
+  assert.deepEqual(bs.map((e) => e.entry.speaker), ['me', 'them', 'me']);
+  assert.deepEqual(bs.map((e) => e.entry.t), [0, (42000 / 16000) * 1000, (90000 / 16000) * 1000]);
+  const parts = session.transcript().map((e) => e.dur);
+  assert.equal(parts.reduce((n, d) => n + d, 0), 7.5, 'the parts add up to the segment');
+});
+
+// (b): a lone window folded into its neighbour leaves two runs of the same
+// voice; they are one voice, not a change.
+test('a lone window between two runs of one voice does not split the segment', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const lengths = [];
+  const embed = async (audio) => { lengths.push(audio.length); return fakeEmbed(audio); };
+  const session = createSession({ embed, transcribe: fakeTranscribe([{}]), speakers, onEvent });
+
+  // 6 s = 96000 samples, windows at 0 … 72000: [me, me, me, them, me, me, me].
+  const audio = new Float32Array(96000).fill(0.5);
+  audio.fill(-0.5, 36000, 48000);
+  session.segment({ audio, startedAt: 0, durationMs: 6000, open: false });
+  await session.drain();
+
+  assert.equal(bubbles(events).length, 1);
+  assert.equal(lengths.length, 7, 'seven windows and no part embedded again');
 });

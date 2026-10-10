@@ -31,6 +31,31 @@ const SPLIT_MIN_MS = 3000;
 const WIN_SECS = 1.5;
 const HOP_SECS = 0.75;
 
+// Folding a short run into its neighbour can leave two adjacent runs of one
+// voice; they are one run, not a change of voice.
+function coalesce(runs) {
+  const out = [];
+  for (const r of runs) {
+    const last = out.at(-1);
+    if (last && last.label === r.label) last.length += r.length;
+    else out.push({ ...r });
+  }
+  return out;
+}
+
+function cutAt(seg, cuts) {
+  const bounds = [0, ...cuts, seg.audio.length];
+  const parts = [];
+  for (let i = 0; i + 1 < bounds.length; i++) {
+    const from = bounds[i];
+    const to = bounds[i + 1];
+    const offMs = (from / SR) * 1000;
+    const durationMs = i + 2 === bounds.length ? seg.durationMs - offMs : ((to - from) / SR) * 1000;
+    parts.push({ audio: seg.audio.slice(from, to), startedAt: seg.startedAt + offMs, durationMs });
+  }
+  return parts;
+}
+
 // Phone budget (final review, finding 5): the window scan costs about 1.3 s of
 // embedding per second of audio. How far embedding trails the speaker is how
 // long this segment waited for its turn plus the audio queued behind it; past
@@ -313,12 +338,16 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
   }
 
   // Re-scans a long segment in overlapping windows and, once short runs are
-  // folded away, splits at the boundary between the first two surviving runs —
-  // whichever side (the opening voice or the one that follows) is the
-  // majority. `.slice()` (not `.subarray()`) gives each part its own buffer:
-  // the real embed/transcribe functions transfer their input's buffer to a
-  // worker or into a fetch body, and transferring a *view* detaches the whole
-  // shared buffer underneath it.
+  // folded away, cuts at every change of voice that survives. The first window
+  // of a new run starts at most one hop after the change, and the window before
+  // it still held the old voice for most of its length, so the change lies in
+  // that hop: the cut goes to its middle. Measured 2026-10-10 (Phase 3, Task 1):
+  // with the shorter closing silence in capture.js, audio-mixed requests went
+  // from 20/64 to 11/62 over the three room fixtures.
+  // `.slice()` (not `.subarray()`) gives each part its own buffer: the real
+  // embed/transcribe functions transfer their input's buffer to a worker or into
+  // a fetch body, and transferring a *view* detaches the whole shared buffer
+  // underneath it.
   async function splitIfNeeded(seg) {
     const winSamples = Math.round(WIN_SECS * SR);
     const hopSamples = Math.round(HOP_SECS * SR);
@@ -333,15 +362,11 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
     if (vectors.length < 3) return [whole];
 
     const labels = labelWindows(speakers, vectors);
-    const runs = mergeShortRuns(runsOf(labels));
+    const runs = coalesce(mergeShortRuns(runsOf(labels)));
     if (runs.length < 2) return [whole];
 
-    const splitAt = starts[runs[1].startIdx];
-    const firstMs = (splitAt / SR) * 1000;
-    return [
-      { audio: seg.audio.slice(0, splitAt), startedAt: seg.startedAt, durationMs: firstMs },
-      { audio: seg.audio.slice(splitAt), startedAt: seg.startedAt + firstMs, durationMs: seg.durationMs - firstMs },
-    ];
+    const half = Math.round(hopSamples / 2);
+    return cutAt(seg, runs.slice(1).map((r) => starts[r.startIdx] + half));
   }
 
   // The whole segment's upload starts at once, beside its label: the bubble waits
