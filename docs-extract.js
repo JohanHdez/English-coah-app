@@ -4,9 +4,11 @@
 
 export const LIMITS = { files: 10, bytes: 2 * 1024 * 1024, chars: 200000 };
 
-// word/document.xml carries markup around every run; a 200 000-character document
-// is far below this, and a zip bomb stops here instead of filling the tab's memory.
-const MAX_XML_BYTES = 32 * 1024 * 1024;
+// word/document.xml wraps every run of text in markup (run and paragraph properties,
+// revision ids); 40 bytes of XML per character of text, 8 MB at the 200 000-character
+// limit, is several times the overhead of a heavily formatted document (an estimate,
+// not a measurement), and a zip bomb stops here instead of filling the tab's memory.
+export const MAX_XML_BYTES = 40 * LIMITS.chars;
 
 export class DocumentError extends Error {
   constructor(message) {
@@ -32,12 +34,33 @@ export function kindOf(file) {
   return null;
 }
 
-function tidy(text) {
-  return text
-    .replace(/\r\n?/g, '\n')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+const isBlank = (c) => c <= 32 || c === 160 || c === 0x1680 || (c >= 0x2000 && c <= 0x200a)
+  || c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x205f || c === 0x3000 || c === 0xfeff;
+
+// Trailing whitespace off every line, at most one blank line in a row, none at the
+// ends, in one pass that only slices lines with text. /[ \t]+\n/ backtracked over
+// every start in a run of spaces with no line break after it (80 000 spaces took
+// 9.4 s, measured), and split/map/join over 700 000 short lines cost 300 ms of CPU.
+export function tidy(text) {
+  const s = text.includes('\r') ? text.replace(/\r\n?/g, '\n') : text;
+  const parts = [];
+  let breaks = 0;
+  for (let i = 0; i <= s.length;) {
+    let end = s.indexOf('\n', i);
+    if (end < 0) end = s.length;
+    let last = end;
+    while (last > i && isBlank(s.charCodeAt(last - 1))) last--;
+    if (last > i) {
+      let first = i;
+      if (!parts.length) while (isBlank(s.charCodeAt(first))) first++;
+      if (parts.length) parts.push(breaks > 1 ? '\n\n' : '\n');
+      parts.push(s.slice(first, last));
+      breaks = 0;
+    }
+    breaks++;
+    i = end + 1;
+  }
+  return parts.join('');
 }
 
 async function inflateRaw(data, maxBytes) {
@@ -100,24 +123,27 @@ export async function readZipEntry(bytes, name, { maxBytes = MAX_XML_BYTES } = {
   return null;
 }
 
-const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+const ENTITIES = new Map([['amp', '&'], ['lt', '<'], ['gt', '>'], ['quot', '"'], ['apos', "'"]]);
 
 function decodeEntities(s) {
   return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => {
-    if (e[0] !== '#') return ENTITIES[e] ?? m;
+    if (e[0] !== '#') return ENTITIES.get(e) ?? m;
     const code = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
     return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
   });
 }
 
 // Only <w:t> text is kept: deleted revisions (<w:delText>) and field codes
-// (<w:instrText>) are markup a reader of the document never sees.
+// (<w:instrText>) are markup a reader of the document never sees. A tag's body
+// cannot cross '<', and a stray '<' is consumed alone, so an unclosed '<' costs
+// the distance to the next one, never the rest of the file.
 export function docxText(xml) {
   let out = '';
   let inText = false;
-  for (const [, close, tag, self, text] of xml.matchAll(/<(\/?)([A-Za-z][\w.:-]*)\b[^>]*?(\/?)>|([^<]+)/g)) {
+  for (const [, close, tag, self, text] of xml.matchAll(/<(\/?)([A-Za-z][\w.:-]*)(?=[\s/>])[^<>]*?(\/?)>|([^<]+)|</g)) {
     if (text !== undefined) {
       if (inText) out += decodeEntities(text);
+      if (out.length > LIMITS.chars) throw tooLong();
       continue;
     }
     if (tag === 'w:t') inText = !close && !self;
@@ -179,6 +205,12 @@ async function docxFileText(bytes) {
   return { text: docxText(new TextDecoder().decode(xml)) };
 }
 
+function plainText(bytes) {
+  const raw = new TextDecoder('utf-8').decode(bytes);
+  if (raw.length > LIMITS.chars) throw tooLong();
+  return { text: tidy(raw) };
+}
+
 // onPage(n, of) reports PDF progress, for «Leyendo… N páginas».
 export async function extractText(file, { loadPdf = loadPdfjs, onPage } = {}) {
   const kind = kindOf(file);
@@ -187,7 +219,7 @@ export async function extractText(file, { loadPdf = loadPdfjs, onPage } = {}) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   const result = kind === 'pdf' ? await pdfText(bytes, { loadPdf, onPage })
     : kind === 'docx' ? await docxFileText(bytes)
-      : { text: tidy(new TextDecoder('utf-8').decode(bytes)) };
+      : plainText(bytes);
   if (result.text.length > LIMITS.chars) throw tooLong();
   if (!result.text.trim()) throw new DocumentError('El documento no tiene texto (¿es un escaneo?).');
   return result;

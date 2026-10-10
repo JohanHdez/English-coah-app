@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractText, readZipEntry, docxText, kindOf, LIMITS } from './docs-extract.js';
+import { extractText, readZipEntry, docxText, kindOf, tidy, LIMITS, MAX_XML_BYTES } from './docs-extract.js';
 import { splitPassages, bm25Index, search } from './lib/passages.js';
 import { cvDocx, cvText, cvPdf, zip, documentXml, malformedPdf, notZipDocx, KNOWN_SENTENCE } from './e2e/docs-fixtures.mjs';
 
@@ -95,9 +95,16 @@ test('a PDF goes through the injected pdf.js and joins pages with a blank line',
   assert.deepEqual(pages, ['1/2', '2/2']);
 });
 
-test('a PDF pdf.js cannot open is «No se pudo leer el PDF.»', async () => {
-  const loadPdf = async () => ({ GlobalWorkerOptions: {}, getDocument: () => ({ promise: Promise.reject(new Error('Invalid PDF structure.')), destroy: async () => {} }) });
+// The stub rejects whatever it is given; that real pdf.js rejects malformedPdf()
+// is shown in Chrome by e2e/docs-check.mjs, outside this gate.
+test('a PDF pdf.js cannot open is «No se pudo leer el PDF.», and its loading task is destroyed', async () => {
+  let destroyed = false;
+  const loadPdf = async () => ({
+    GlobalWorkerOptions: {},
+    getDocument: () => ({ promise: Promise.reject(new Error('Invalid PDF structure.')), destroy: async () => { destroyed = true; } }),
+  });
   await rejectsWith(extractText(fileOf(malformedPdf(), 'broken.pdf'), { loadPdf }), '[documentos] No se pudo leer el PDF.');
+  assert.equal(destroyed, true);
 });
 
 test('a password-protected PDF says so', async () => {
@@ -142,4 +149,46 @@ test('the DOCX CV splits into passages and the known sentence is found', async (
 
 test('documentXml in the fixture really splits each line into two runs', () => {
   assert.equal((documentXml(['abcd']).match(/<w:t /g) || []).length, 2);
+});
+
+// CPU time of this process, not wall time: the gate runs test files in parallel,
+// often beside a Chrome harness, and the quadratic versions took over 60 s.
+const elapsed = (fn) => { const t0 = process.cpuUsage(); fn(); const d = process.cpuUsage(t0); return (d.user + d.system) / 1000; };
+
+test('tidy is linear: 2 MB of spaces and of "\\t \\n" interleavings in under 200 ms each', () => {
+  const spaces = ' '.repeat(LIMITS.bytes);
+  const mixed = '\t \n'.repeat(Math.floor(LIMITS.bytes / 3));
+  for (const input of [spaces, mixed, `word${spaces}word`]) {
+    const ms = elapsed(() => tidy(input));
+    assert.ok(ms < 200, `${ms.toFixed(0)} ms`);
+  }
+  assert.equal(tidy('a  \t\r\n\n\n\nb \n'), 'a\n\nb');
+});
+
+test('a 2 MB text file of spaces is refused at once with the character limit', async () => {
+  const t0 = process.cpuUsage();
+  await rejectsWith(extractText(fileOf(Buffer.from(' '.repeat(LIMITS.bytes)), 'spaces.txt')), '[documentos] El documento supera los 200 000 caracteres de texto.');
+  const d = process.cpuUsage(t0);
+  assert.ok((d.user + d.system) / 1000 < 200);
+});
+
+test('docxText is linear on 200 000 unclosed "<", and on unclosed tags', () => {
+  for (const xml of ['<'.repeat(200000), '<a '.repeat(200000), `<w:t>${'<a.b.c'.repeat(40000)}`]) {
+    const ms = elapsed(() => docxText(xml));
+    assert.ok(ms < 200, `${ms.toFixed(0)} ms`);
+  }
+});
+
+test('docxText stops at the character limit', () => {
+  const para = `<w:p><w:r><w:t>${'x'.repeat(1000)}</w:t></w:r></w:p>`;
+  assert.throws(() => docxText(para.repeat(201)), { message: '[documentos] El documento supera los 200 000 caracteres de texto.' });
+  assert.equal(docxText(para.repeat(199)).length, 199 * 1001 - 1);
+});
+
+test('the inflated document.xml cap is 40 bytes of markup per character of text', () => {
+  assert.equal(MAX_XML_BYTES, 40 * LIMITS.chars);
+});
+
+test('an entity named after an Object property stays literal', () => {
+  assert.equal(docxText('<w:p><w:r><w:t>&constructor; &toString; &amp;</w:t></w:r></w:p>'), '&constructor; &toString; &');
 });
