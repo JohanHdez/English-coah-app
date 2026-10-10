@@ -59,15 +59,28 @@ export function limitedField({ label, hint, max, value, read, onInput, rows = 4 
   return wrap;
 }
 
+// One put per pause, not per keystroke; the in-memory value is already current.
+// What is still waiting is written at once when the field loses focus or the page
+// is hidden, so closing the tab inside the 300 ms does not lose the last words.
+let pending = null;
+function flushProfile() {
+  if (!pending) return;
+  const { settings, onError, kind, timer } = pending;
+  pending = null;
+  clearTimeout(timer);
+  save(settings).catch(() => onError(saveFailureText(kind)));
+}
+let flushOnHide = false;
+
 export function profileFields(settings, onError = () => {}) {
-  const timers = {};
+  if (!flushOnHide) { window.addEventListener('pagehide', flushProfile); flushOnHide = true; }
   const write = (key, kind) => (value) => {
     settings[key] = clampField(value, key === 'profile' ? PROFILE_MAX_CHARS : CONTEXT_MAX_CHARS);
-    // One put per pause, not per keystroke; the in-memory value is already current.
-    clearTimeout(timers[key]);
-    timers[key] = setTimeout(() => save(settings).catch(() => onError(saveFailureText(kind))), 300);
+    clearTimeout(pending?.timer);
+    pending = { settings, onError, kind, timer: setTimeout(flushProfile, 300) };
   };
   const box = el('div', 'profile-fields');
+  box.addEventListener('focusout', flushProfile);
   box.append(
     limitedField({
       label: 'Tu perfil',
@@ -347,6 +360,6 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy, onLayout
       epoch++;
       closeReply();
     },
-    destroy() { destroyed = true; controller?.abort(); },
+    destroy() { destroyed = true; controller?.abort(); flushProfile(); },
   };
 }
