@@ -96,6 +96,9 @@ Kept as copied: every prompt, `parseReply`, `parseJsonLoose`, `runsOf`, `turnsTo
   model (the extension's rule), OpenAI, Gemini, Claude. Other Groq models and the local server get no
   schema; `parseJsonLoose` recovers the JSON. The extension's `strict: true` and `temperature: 0.3`
   are not sent (`buildChat` sends neither).
+- `askReply` takes an optional `documents` (the records of «Mis documentos»); `documentsQuery`/`documentsBlock`
+  add the best passages (BM25, `lib/passages.js`) up to `DOCUMENTS_MAX_CHARS` = 3000 after the profile and the
+  context, and nothing when none is enabled or none scores. `askReport` does not use them (Phase 3, Task 4).
 - `CoachError` messages carry the `[coach]` stage prefix.
 - `askReply`/`askReport` take two optional extras: `signal` and `chat` (defaults to `callChat`; the tests
   inject a stub).

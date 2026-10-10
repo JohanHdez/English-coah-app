@@ -344,7 +344,8 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy, onLayout
     onBusy(true);
     showReply({ pending: true });
     try {
-      const result = await askReply({ turns, settings, signal: mine.signal });
+      const documents = await store.listDocuments().catch(() => []);
+      const result = await askReply({ turns, settings, signal: mine.signal, documents });
       if (!mine.signal.aborted && !destroyed && asked === epoch) showReply(result);
     } catch (err) {
       if (!mine.signal.aborted && !destroyed && asked === epoch) showReply({ error: err?.message || String(err) });
