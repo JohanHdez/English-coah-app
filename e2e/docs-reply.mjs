@@ -1,7 +1,8 @@
 // Measures «Respuesta» with documents: a synthetic CV plus a long distractor
 // document, five interview questions, and the prompt the local chat stand-in
 // received for each. Node only; nothing leaves the machine.
-//   node e2e/docs-reply.mjs
+//   node e2e/docs-reply.mjs            CV + 80 distractor notes (search)
+//   node e2e/docs-reply.mjs --cv-only  the CV alone (sent whole)
 import { startMockGroq } from './mock-groq.mjs';
 import { cvText } from './docs-fixtures.mjs';
 import { splitPassages } from '../lib/passages.js';
@@ -15,9 +16,10 @@ const filler = (i) => `Notes on ${TOPICS[i % TOPICS.length]} number ${i}: weeken
   + `seasonal reminders and a long paragraph about ${TOPICS[(i + 3) % TOPICS.length]} that has nothing to do with work. `.repeat(2);
 const notes = Array.from({ length: 80 }, (_, i) => filler(i)).join('\n\n');
 
+const cvOnly = process.argv.includes('--cv-only');
 const documents = [
   { id: 'cv', name: 'cv.txt', enabled: true, passages: splitPassages(cvText()).map((text, i) => ({ id: `cv${i}`, text })) },
-  { id: 'notes', name: 'notes.txt', enabled: true, passages: splitPassages(notes).map((text, i) => ({ id: `n${i}`, text })) },
+  ...(cvOnly ? [] : [{ id: 'notes', name: 'notes.txt', enabled: true, passages: splitPassages(notes).map((text, i) => ({ id: `n${i}`, text })) }]),
 ];
 
 const QUESTIONS = [
@@ -47,6 +49,6 @@ for (const [question, needle] of QUESTIONS) {
 await mock.close();
 const sorted = [...times].sort((a, b) => a - b);
 const passagesTotal = documents.reduce((n, d) => n + d.passages.length, 0);
-console.log(`hit rate ${hits}/${QUESTIONS.length}; search over ${passagesTotal} passages (cap ${DOCUMENTS_MAX_CHARS} chars): `
+console.log(`${cvOnly ? 'CV alone' : 'CV + notes'}: hit rate ${hits}/${QUESTIONS.length}; search over ${passagesTotal} passages (cap ${DOCUMENTS_MAX_CHARS} chars): `
   + `median ${sorted[2].toFixed(1)} ms, max ${sorted[4].toFixed(1)} ms (index built per call, cold first call included)`);
 process.exit(hits === QUESTIONS.length ? 0 : 1);

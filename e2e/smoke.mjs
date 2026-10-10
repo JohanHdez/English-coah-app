@@ -21,7 +21,7 @@
 
 import { join } from 'node:path';
 import { Chrome } from './cdp.mjs';
-import { writeDocsFixtures, cvText } from './docs-fixtures.mjs';
+import { writeDocsFixtures, cvText, KNOWN_SENTENCE } from './docs-fixtures.mjs';
 import { startMockGroq } from './mock-groq.mjs';
 import { PROFILE, FIXTURES, sleep, waitFor, startServer, openPage, assertNoExternal, enrollViaUi, resetStorage, startMeeting, tap, DRAIN_TIMEOUT_MS, FAKE_KEY } from './harness.mjs';
 
@@ -355,12 +355,13 @@ async function main() {
     if (rendered.bold.join() !== 'Angular' || rendered.stars || rendered.ideas !== 2) throw new Error(`[smoke] the suggested answer rendered wrong: ${JSON.stringify(rendered)}`);
     const asked = mock.chats.slice(chatsBefore).find((c) => /Conversation so far:/.test(c.user));
     if (!asked || !asked.user.includes('PROFILE-MARK') || !asked.user.includes('CONTEXT-MARK')) throw new Error('[smoke] the request did not carry the profile and the context just typed');
+    if (!asked.user.includes(KNOWN_SENTENCE) || !/Learner's documents/.test(asked.user)) throw new Error('[smoke] the enabled CV did not reach the «Respuesta» prompt');
     await tap(chrome, session, '.coach-reply .reply-item.answer');
     await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-reply .reply-item.answer.copied') != null"), { label: 'the answer copied' });
     if ((await readClipboard()) !== 'I mostly work with Angular every day.') throw new Error('[smoke] the copied answer kept its ** markers or was not copied');
     await tap(chrome, session, '.coach-reply .reply-close');
     await waitFor(() => chrome.evaluate(session, "document.querySelector('.coach-reply').hidden && !document.querySelector('.coach-tabs').hidden"), { label: 'the panel back to its tabs' });
-    console.log(`coach: «Respuesta» -> «Pensando…» -> answer with "Angular" in <b>, 2 ideas, copied without markers; ${replyMs} ms from tap to render against the stand-in (its chat delay is ${Math.round(300 / 3)} ms); profile and context reached the request`);
+    console.log(`coach: «Respuesta» -> «Pensando…» -> answer with "Angular" in <b>, 2 ideas, copied without markers; ${replyMs} ms from tap to render against the stand-in (its chat delay is ${Math.round(300 / 3)} ms); profile, context and the enabled document reached the request`);
 
     // Translation, per bubble, through the same stand-in and the app's own translate.js.
     const times = await chrome.evaluate(session, `(async () => {
