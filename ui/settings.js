@@ -26,7 +26,7 @@ function field(labelText, input) {
   return label;
 }
 
-export function renderSettings(root, { settings, forced, onBack, onReenroll, endMeeting }) {
+export function renderSettings(root, { settings, forced, onBack, onReenroll, endMeeting, meetingLive, forgetMeeting }) {
   root.textContent = '';
 
   const section = document.createElement('section');
@@ -266,10 +266,11 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
   deleteTranscript.type = 'button';
   deleteTranscript.textContent = 'Borrar la conversación guardada';
   danger.append(deleteTranscript);
-  if (endMeeting) {
-    // The running meeting re-persists [...restored, ...session.transcript()]
-    // after every bubble, so a delete here would be silently undone within
-    // seconds by the very next one — disabled instead of pretending it worked.
+  // A running meeting re-persists [...restored, ...session.transcript()] after
+  // every bubble, so a delete then would be silently undone within seconds by the
+  // very next one — disabled instead of pretending it worked. Between meetings the
+  // screen underneath is emptied too, so nothing on it writes the record back.
+  if (meetingLive?.()) {
     deleteTranscript.disabled = true;
     const hint = document.createElement('p');
     hint.className = 'notice';
@@ -278,7 +279,11 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
   } else {
     deleteTranscript.addEventListener('click', async () => {
       if (!confirm('¿Borrar la última conversación guardada en este dispositivo?')) return;
-      await store.del('lastTranscript');
+      if (forgetMeeting) {
+        if (!await forgetMeeting()) { setNotice('Termina la reunión para borrarla.'); return; }
+      } else {
+        await store.del('lastTranscript');
+      }
       setNotice('Conversación borrada.');
     });
   }

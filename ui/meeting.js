@@ -294,7 +294,11 @@ export function renderMeeting(root, { settings, onEvent }) {
   // "the learner actually ended this" — and a translation landing after
   // "Terminar" re-persists without reopening the meeting.
   let finishedAt = null;
+  // Set by «Borrar la conversación guardada»: a translation or a report that lands
+  // afterwards must not write the deleted conversation back.
+  let forgotten = false;
   function persistTranscript() {
+    if (forgotten) return;
     const entries = withTranslations([...restored, ...(session ? session.transcript() : [])], cache);
     store.set('lastTranscript', reportMd ? { entries, finishedAt, report: reportMd } : { entries, finishedAt }).catch(() => {});
   }
@@ -619,7 +623,16 @@ export function renderMeeting(root, { settings, onEvent }) {
     if (!paused && epoch === captureEpoch) await setupLive(captureHandle.stream.getAudioTracks()[0]);
   }
 
+  // Counts init()s still loading the print, the model or the microphone: a meeting
+  // on its way to recording is already one the delete must wait for.
+  let initPending = 0;
   async function init(audioContext) {
+    initPending++;
+    try { await initMeeting(audioContext); } finally { initPending--; }
+  }
+
+  async function initMeeting(audioContext) {
+    forgotten = false;
     const print = await store.get('print');
     if (destroyed) { audioContext.close().catch(() => {}); return; }
     if (!print || print.model !== MODEL_ID) {
@@ -678,8 +691,9 @@ export function renderMeeting(root, { settings, onEvent }) {
     startRecording(audioContext);
   });
 
+  let chooser = null;
   function showResumeChooser(saved) {
-    const chooser = document.createElement('div');
+    chooser = document.createElement('div');
     chooser.className = 'resume-chooser';
     const p = document.createElement('p');
     p.textContent = 'Tienes una conversación sin terminar.';
@@ -699,12 +713,14 @@ export function renderMeeting(root, { settings, onEvent }) {
     continueBtn.addEventListener('click', () => {
       const audioContext = createAudioContext();
       chooser.remove();
+      chooser = null;
       showRestored(saved);
       init(audioContext);
     });
     freshBtn.addEventListener('click', async () => {
       const audioContext = createAudioContext();
       chooser.remove();
+      chooser = null;
       await store.del('lastTranscript').catch(() => {});
       init(audioContext);
     });
@@ -813,7 +829,29 @@ export function renderMeeting(root, { settings, onEvent }) {
     await init(audioContext);
   });
 
-  return function cleanup() {
+  // Only between meetings: a running one re-persists after every bubble, and one
+  // still draining after «Terminar» persists once more when it finishes.
+  const meetingLive = () => running || initPending > 0 || (stopping && !finishedAt);
+
+  async function forget() {
+    if (meetingLive()) return false;
+    forgotten = true;
+    coach.reset();
+    report.reset();
+    reportMd = null;
+    reportBtn.hidden = true;
+    transcriptEl.textContent = '';
+    cache.clear();
+    restored = [];
+    session = null;
+    if (chooser) { chooser.remove(); chooser = null; }
+    if (newMeetingBtn.hidden) startBtn.hidden = false;
+    setStatus('');
+    await store.del('lastTranscript');
+    return true;
+  }
+
+  function cleanup() {
     destroyed = true;
     running = false;
     stopStallCheck();
@@ -828,5 +866,8 @@ export function renderMeeting(root, { settings, onEvent }) {
     if (captureHandle) captureHandle.stop().catch(() => {});
     worker.terminate();
     dropPreviewWorker();
-  };
+  }
+  cleanup.live = meetingLive;
+  cleanup.forget = forget;
+  return cleanup;
 }

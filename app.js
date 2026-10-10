@@ -90,6 +90,8 @@ function openSettingsOverlay() {
     // and route() alone decides what comes next (enrollment, print or not).
     onReenroll: route,
     endMeeting: endActiveMeeting,
+    meetingLive: activeMeeting.live,
+    forgetMeeting: activeMeeting.forget,
   });
   if (typeof result === 'function') overlayTeardown = result;
 }
@@ -106,7 +108,7 @@ async function route() {
   if (!print || print.model !== MODEL_ID) { mount(renderEnroll, { onDone: route }); return; }
 
   mount(renderMeeting, { settings, onEvent: reportEvent });
-  activeMeeting = { settings };
+  activeMeeting = { settings, live: teardown.live, forget: teardown.forget };
 }
 
 settingsBtn.addEventListener('click', async () => {

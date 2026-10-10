@@ -527,6 +527,40 @@ async function main() {
     }
     console.log('meeting: a «Reanudar» still waiting for the microphone when «Terminar» and «Nueva reunión» ran was ended on arrival; one capture live');
 
+    // Final review, I3: once «Terminar» has finished, Ajustes can delete the stored
+    // conversation, and nothing on the screen underneath writes it back.
+    await tap(chrome, session, '.meeting .controls .stop-meeting');
+    await waitFor(
+      () => chrome.evaluate(session, "document.querySelector('.meeting .status')?.textContent === 'Reunión terminada.'"),
+      { timeoutMs: DRAIN_TIMEOUT_MS + 5000, label: 'the second «Terminar» to complete' },
+    );
+    const storedBeforeDelete = await chrome.evaluate(session, "import('./store.js').then((m) => m.get('lastTranscript')).then((t) => t?.entries?.length ?? -1)");
+    await chrome.evaluate(session, "document.getElementById('settingsBtn').click();");
+    await waitFor(() => chrome.evaluate(session, "document.querySelector('#overlay .screen.settings') != null"), { label: 'the settings overlay after «Terminar»' });
+    const deleteAfterStop = await chrome.evaluate(session, `(() => {
+      const btn = [...document.querySelectorAll('#overlay button')].find((b) => b.textContent === 'Borrar la conversación guardada');
+      return btn ? { disabled: btn.disabled, hint: btn.parentElement.textContent.includes('Termina la reunión para borrarla') } : null;
+    })()`);
+    if (!deleteAfterStop || deleteAfterStop.disabled || deleteAfterStop.hint) {
+      throw new Error(`[smoke] "Borrar la conversación guardada" is not usable after «Terminar»: ${JSON.stringify(deleteAfterStop)}`);
+    }
+    await chrome.evaluate(session, `
+      window.confirm = () => true;
+      [...document.querySelectorAll('#overlay button')].find((b) => b.textContent === 'Borrar la conversación guardada').click();
+    `);
+    await waitFor(() => chrome.evaluate(session, "[...document.querySelectorAll('#overlay .notice')].some((p) => !p.hidden && p.textContent === 'Conversación borrada.')"), { label: '«Conversación borrada.»' });
+    await chrome.evaluate(session, "[...document.querySelectorAll('#overlay button')].find((b) => b.textContent === 'Volver').click();");
+    await sleep(2000);
+    const afterDelete = await chrome.evaluate(session, `import('./store.js').then((m) => m.get('lastTranscript')).then((t) => ({
+      stored: t === undefined ? null : t,
+      bubbles: document.querySelectorAll('.meeting .transcript .bubble').length,
+      newMeeting: [...document.querySelectorAll('.meeting .controls button')].some((b) => b.textContent === 'Nueva reunión' && !b.hidden),
+    }))`);
+    if (afterDelete.stored !== null || afterDelete.bubbles !== 0 || !afterDelete.newMeeting) {
+      throw new Error(`[smoke] the conversation was not deleted for good: ${JSON.stringify(afterDelete)}`);
+    }
+    console.log(`settings: after «Terminar», «Borrar la conversación guardada» is enabled; it deleted the stored conversation (${storedBeforeDelete} entries) and emptied the screen, and nothing wrote it back within 2 s`);
+
     assertNoExternal(page.externalRequests, 'smoke');
     console.log(`network: 0 requests reached api.groq.com (the mock handled ${mock.requests.length})`);
 
