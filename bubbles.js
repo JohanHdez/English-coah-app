@@ -67,3 +67,14 @@ export function withTranslations(entries, cache) {
 export function mayInstallCapture({ destroyed, epoch, currentEpoch }) {
   return !destroyed && epoch === currentEpoch;
 }
+
+// The worklet posts a block every 100 ms while the audio thread renders. A Mac
+// that idle-slept mid-run (2026-10-09) stopped rendering for 24 minutes while the
+// track stayed 'live' and the context 'running', so silence from the worklet is
+// the only sign of it.
+export const STALL_MS = 3000;
+export const STALL_CHECK_MS = 2000;
+
+export function captureStalled({ lastBlockAt, now, paused }) {
+  return !paused && now - lastBlockAt >= STALL_MS;
+}

@@ -5,6 +5,7 @@
 // everything downstream of a segment).
 
 import { Segmenter } from './lib/segmenter.js';
+import { captureStalled } from './bubbles.js';
 
 const DEFAULT_CONSTRAINTS = {
   echoCancellation: false,
@@ -75,7 +76,9 @@ export async function startCapture({ onSegment, onPreview, canPreview, onLevel, 
     // phrase actually closed.
     const segmenter = new Segmenter('mixed', onSegment || (() => {}), undefined, { onPreview, canPreview });
     let paused = false;
+    let lastBlockAt = performance.now();
     worklet.port.onmessage = ({ data }) => {
+      lastBlockAt = performance.now();
       if (onLevel) onLevel(data.rms);
       if (onBlock) onBlock(data);
       if (paused) return;
@@ -90,6 +93,9 @@ export async function startCapture({ onSegment, onPreview, canPreview, onLevel, 
       alive() {
         return audioContext.state === 'running'
           && stream.getAudioTracks().every((track) => track.readyState === 'live');
+      },
+      stalled() {
+        return captureStalled({ lastBlockAt, now: performance.now(), paused });
       },
       stop() {
         // Whatever the learner was saying when Stop was pressed must still

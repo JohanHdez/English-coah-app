@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations, mayInstallCapture } from './bubbles.js';
+import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations, mayInstallCapture, captureStalled, STALL_MS } from './bubbles.js';
 
 test('foldTranslation: a brand new bubble carries no translation yet', () => {
   assert.deepEqual(foldTranslation(undefined, 'Hello.'), { text: 'Hello.' });
@@ -133,4 +133,22 @@ test('mayInstallCapture: nothing is installed once the screen is gone', () => {
 test('mayInstallCapture: a capture opened before Terminar or Nueva reunión is stale', () => {
   assert.equal(mayInstallCapture({ destroyed: false, epoch: 3, currentEpoch: 4 }), false);
   assert.equal(mayInstallCapture({ destroyed: false, epoch: 3, currentEpoch: 5 }), false);
+});
+
+test('captureStalled: blocks arriving every 100 ms is a live capture', () => {
+  assert.equal(captureStalled({ lastBlockAt: 10000, now: 10100, paused: false }), false);
+});
+
+test('captureStalled: just under the limit is not yet a stall', () => {
+  assert.equal(captureStalled({ lastBlockAt: 10000, now: 10000 + STALL_MS - 1, paused: false }), false);
+});
+
+test('captureStalled: no block for STALL_MS while recording is a stall', () => {
+  assert.equal(STALL_MS, 3000);
+  assert.equal(captureStalled({ lastBlockAt: 10000, now: 10000 + STALL_MS, paused: false }), true);
+  assert.equal(captureStalled({ lastBlockAt: 10000, now: 10000 + 24 * 60 * 1000, paused: false }), true);
+});
+
+test('captureStalled: a paused meeting is never reported as stalled', () => {
+  assert.equal(captureStalled({ lastBlockAt: 10000, now: 60000, paused: true }), false);
 });

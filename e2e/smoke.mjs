@@ -46,6 +46,24 @@ const KEEP_STREAMS = `(() => {
     window.__streams.push(s);
     return s;
   };
+  // A worklet whose blocks stop arriving while the track and the context stay up:
+  // what a Mac's idle sleep did to a run on 2026-10-09. The port's handler is
+  // wrapped so the run can silence it without touching the app.
+  const Native = window.AudioWorkletNode;
+  const setHandler = Object.getOwnPropertyDescriptor(MessagePort.prototype, 'onmessage').set;
+  window.__stallWorklet = false;
+  window.AudioWorkletNode = class extends Native {
+    constructor(...args) {
+      super(...args);
+      const port = this.port;
+      let handler = null;
+      Object.defineProperty(port, 'onmessage', {
+        configurable: true,
+        get: () => handler,
+        set: (fn) => { handler = fn; setHandler.call(port, fn && ((e) => { if (!window.__stallWorklet) fn(e); })); },
+      });
+    }
+  };
 })();`;
 
 // Headless Chrome refuses the screen Wake Lock, so the app's own warning about it
@@ -351,6 +369,22 @@ async function main() {
     });
     const afterResume = await bubbleCount(chrome, session);
     console.log(`meeting: «Reanudar» restarted capture into the same meeting (${beforeLoss} -> ${afterResume} bubbles, ${await chrome.evaluate(session, 'window.__streams.length')} streams opened)`);
+
+    // Final review, I1: the worklet goes quiet with the track live and the context
+    // running, and the page stays visible. The periodic check must notice by itself.
+    const tStall = Date.now();
+    await chrome.evaluate(session, 'window.__stallWorklet = true');
+    const stalled = await waitFor(() => chrome.evaluate(session, `(() => {
+      const s = document.querySelector('.meeting .status')?.textContent || '';
+      return /La captura se detuvo: hace unos segundos que no llega audio/.test(s) && document.querySelector('.meeting .resume-capture')?.hidden === false ? s : '';
+    })()`), { timeoutMs: 10000, everyMs: 100, label: 'the stalled-capture notice' });
+    const stallMs = Date.now() - tStall;
+    const stallContext = await chrome.evaluate(session, "window.__streams.at(-1).getTracks().every((t) => t.readyState === 'live')");
+    if (!stallContext) throw new Error('[smoke] the stall simulation ended the track: it no longer tests a silent stall');
+    await chrome.evaluate(session, 'window.__stallWorklet = false');
+    await tap(chrome, session, '.meeting .resume-capture');
+    await waitFor(() => statusText(chrome, session).then((t) => RECORDING.test(t)), { timeoutMs: 15000, label: '«Grabando…» after «Reanudar» from a stall' });
+    console.log(`meeting: a silent worklet (track live, page visible) -> "${stalled}" after ${(stallMs / 1000).toFixed(1)} s; «Reanudar» recorded again`);
 
     // Phase 2, task 1: capture is lost again and the next microphone request is
     // held (as a permission prompt would hold it). «Reanudar», then «Terminar»,

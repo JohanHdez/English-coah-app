@@ -15,7 +15,7 @@ import { transcribe } from '../transcribe.js';
 import { toSpanish } from '../translate.js';
 import { liveAvailability, installLive, startLive } from '../lib/live.js';
 import { liveMode, createPreviewLane, NOTES, isMobile, deviceFacts, previewEnabled } from '../live-lane.js';
-import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations, mayInstallCapture } from '../bubbles.js';
+import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations, mayInstallCapture, STALL_CHECK_MS } from '../bubbles.js';
 import { MODEL_ID } from '../embed.js';
 import * as store from '../store.js';
 import { createCoachPanel } from './coach.js';
@@ -28,6 +28,7 @@ import { createReportPanel } from './report.js';
 const DRAIN_TIMEOUT_MS = 35000;
 
 const CAPTURE_LOST = '[micrófono] La captura se detuvo mientras la app estaba en segundo plano.';
+const CAPTURE_STALLED = '[micrófono] La captura se detuvo: hace unos segundos que no llega audio del micrófono.';
 
 // A Web Speech recogniser hears one language. 'multi' (bilingual) meetings get no
 // live line, and a note saying why, rather than mis-recognising whichever half it
@@ -524,14 +525,22 @@ export function renderMeeting(root, { settings, onEvent }) {
 
   function checkCapture() {
     if (!running || !captureHandle || captureLost) return !captureLost;
-    if (captureHandle.alive()) return true;
+    const alive = captureHandle.alive();
+    if (alive && !captureHandle.stalled()) return true;
     captureLost = true;
     teardownLive();
-    setStatus(CAPTURE_LOST, 'error');
+    setStatus(alive ? CAPTURE_STALLED : CAPTURE_LOST, 'error');
+    onEvent?.({ type: 'capture-lost', stalled: alive });
     resumeBtn.hidden = false;
     talkBtn.disabled = true;
     pauseBtn.disabled = true;
     return false;
+  }
+
+  let stallTimer = null;
+  function stopStallCheck() {
+    clearInterval(stallTimer);
+    stallTimer = null;
   }
 
   function onCaptureChange() {
@@ -599,6 +608,8 @@ export function renderMeeting(root, { settings, onEvent }) {
     audioContext.addEventListener('statechange', onCaptureChange);
     captureLost = false;
     running = true;
+    stopStallCheck();
+    stallTimer = setInterval(checkCapture, STALL_CHECK_MS);
     resumeBtn.hidden = true;
     talkBtn.disabled = false;
     pauseBtn.disabled = false;
@@ -743,6 +754,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     stopping = true;
     captureEpoch++;
     running = false;
+    stopStallCheck();
     resumeBtn.hidden = true;
     talkBtn.disabled = true;
     pauseBtn.disabled = true;
@@ -803,6 +815,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   return function cleanup() {
     destroyed = true;
     running = false;
+    stopStallCheck();
     coach.destroy();
     report.destroy();
     document.removeEventListener('visibilitychange', onVisibility);

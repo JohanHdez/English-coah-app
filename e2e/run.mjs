@@ -128,6 +128,11 @@ if (mobile && (run.whisperRequests.length || modes.some((e) => e.kind === 'previ
 }
 if (pv.length) console.log(`  preview passes            ${pv.length} · p50 ${fmt(pq(0.5), 0)} ms · p90 ${fmt(pq(0.9), 0)} ms · max ${fmt(pv.at(-1), 0)} ms (retires after 2 in a row over 1500 ms)`);
 console.log(`  error events              ${totals.errorEvents}`);
+// A stalled capture is the host (sleep, a stopped output engine), not the app: the
+// run is not scored as if the pipeline had dropped those cues.
+const lostCapture = run.events.filter((e) => e.type === 'capture-lost');
+console.log(`  capture lost              ${lostCapture.length}${lostCapture.length ? ` (${lostCapture.map((e) => `${e.stalled ? 'stalled' : 'ended'} at ${at(e)}`).join(', ')}; host slept? run under caffeinate -i)` : ''}`);
+if (lostCapture.length) process.exitCode = 1;
 console.log(`  console errors            ${run.errors.length}`);
 for (const e of run.errors.slice(0, 5)) console.log(`    ${e}`);
 
