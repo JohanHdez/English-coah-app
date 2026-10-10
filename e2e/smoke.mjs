@@ -21,6 +21,7 @@
 
 import { join } from 'node:path';
 import { Chrome } from './cdp.mjs';
+import { writeDocsFixtures, cvText } from './docs-fixtures.mjs';
 import { startMockGroq } from './mock-groq.mjs';
 import { PROFILE, FIXTURES, sleep, waitFor, startServer, openPage, assertNoExternal, enrollViaUi, resetStorage, startMeeting, tap, DRAIN_TIMEOUT_MS, FAKE_KEY } from './harness.mjs';
 
@@ -97,6 +98,7 @@ async function main() {
     if (!/audio de la reunión se envía a Groq/.test(consentText) || !/texto de la conversación se envía a Groq/.test(consentText)) {
       throw new Error(`[smoke] the consent screen does not say who receives the audio and the text: ${consentText}`);
     }
+    if (!/documentos/.test(consentText) || !/máx\. 3000 caracteres/.test(consentText)) throw new Error('[smoke] the consent screen does not mention documents');
     await chrome.evaluate(session, `
       [...document.querySelectorAll('button')].find((b) => b.textContent === 'Entendido').click();
     `);
@@ -137,6 +139,43 @@ async function main() {
     if (pickers.audio.includes('anthropic') || !pickers.text.includes('anthropic') || !pickers.note) throw new Error(`[smoke] the provider pickers are wrong: ${JSON.stringify(pickers)}`);
     if (!/audio de la reunión se envía a Groq/.test(pickers.routing)) throw new Error(`[smoke] settings do not say who receives the audio: ${pickers.routing}`);
     console.log(`settings: fake Groq key saved; groqBase pointed at the local mock (${mock.url})`);
+
+    // --- «Mis documentos»: the synthetic CV as PDF and DOCX through the file input ---
+    const [cvPdfPath, cvDocxPath] = ['cv.pdf', 'cv.docx'].map((n) => writeDocsFixtures().find((f) => f.endsWith(n)));
+    const docNames = () => chrome.evaluate(session, `[...document.querySelectorAll('.documents .doc')].map((li) => ({
+      name: li.querySelector('strong').textContent,
+      meta: li.querySelector('.doc-meta').textContent,
+      on: li.querySelector('input[type=checkbox]').checked,
+    }))`);
+    async function attach(path) {
+      const { root } = await chrome.send('DOM.getDocument', {}, session);
+      const { nodeId } = await chrome.send('DOM.querySelector', { nodeId: root.nodeId, selector: '.documents input[type=file]' }, session);
+      await chrome.send('DOM.setFileInputFiles', { files: [path], nodeId }, session);
+    }
+    // resetStorage leaves the documents store of an earlier run alone.
+    await chrome.evaluate(session, "import('./store.js').then(async (m) => { for (const d of await m.listDocuments()) await m.deleteDocument(d.id); })");
+    await chrome.evaluate(session, "document.querySelector('.documents .doc-list').textContent = ''");
+    const accept = await chrome.evaluate(session, "document.querySelector('.documents input[type=file]')?.accept");
+    if (accept !== '.pdf,.docx,.txt,.md') throw new Error(`[smoke] the document input accepts "${accept}"`);
+    await attach(cvPdfPath);
+    await waitFor(() => docNames().then((d) => d.length === 1), { label: 'the PDF to be listed' });
+    await attach(cvDocxPath);
+    await waitFor(() => docNames().then((d) => d.length === 2), { label: 'the DOCX to be listed' });
+    const listed = await docNames();
+    const expectChars = cvText().length;
+    for (const d of listed) {
+      const n = Number(/([\d ]+) caracteres/.exec(d.meta)?.[1].replace(/ /g, ''));
+      if (!(n > expectChars * 0.8 && n < expectChars * 1.2) || !d.on) throw new Error(`[smoke] unexpected document row: ${JSON.stringify(d)} (CV is ~${expectChars} characters)`);
+    }
+    const privacyLine = await chrome.evaluate(session, "document.querySelector('.documents .hint')?.textContent");
+    if (!/El archivo no sale de tu dispositivo/.test(privacyLine) || !/máx\. 3000 caracteres/.test(privacyLine)) throw new Error(`[smoke] privacy line missing: ${privacyLine}`);
+    await chrome.evaluate(session, "document.querySelector('.documents .doc input[type=checkbox]').click()");
+    await waitFor(() => chrome.evaluate(session, "import('./store.js').then((m) => m.listDocuments()).then((d) => d.filter((x) => !x.enabled).length === 1)"), { label: 'the switch to persist' });
+    const storedDocs = await chrome.evaluate(session, "import('./store.js').then((m) => m.listDocuments()).then((d) => d.map((x) => ({ keys: Object.keys(x).sort().join(), p: x.passages.length, bytes: JSON.stringify(x).includes('%PDF') })))");
+    if (storedDocs.some((x) => x.bytes || x.p < 1 || x.keys !== 'addedAt,chars,enabled,id,name,passages,size,type')) throw new Error(`[smoke] stored records are wrong: ${JSON.stringify(storedDocs)}`);
+    await chrome.evaluate(session, "window.confirm = () => true; document.querySelector('.documents .doc .doc-delete').click()");
+    await waitFor(() => docNames().then((d) => d.length === 1), { label: 'the document to be deleted' });
+    console.log(`documents: CV as PDF and DOCX read through the file input (${listed.map((d) => d.meta).join(' | ')}); one switched off, one deleted, ${storedDocs[0].p} passage(s) each, no file bytes stored`);
     await chrome.evaluate(session, `
       [...document.querySelectorAll('button')].find((b) => b.textContent === 'Continuar').click();
     `);

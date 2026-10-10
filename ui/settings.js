@@ -15,6 +15,7 @@ import { profileFields } from './coach.js';
 import { CATALOGUE } from '../lib/phrasebook.js';
 import { categoryActive, setCategoryActive } from '../coachdata.js';
 import { providersFor, providerById, routing, isConfigured, isChatConfigured, isLocalBase } from '../providers.js';
+import { documentsSection } from './documents.js';
 import { isMobile, deviceFacts, previewEnabled } from '../live-lane.js';
 
 function field(labelText, input) {
@@ -222,6 +223,8 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
     phrasesFieldset.append(label);
   }
   section.append(phrasesFieldset);
+
+  section.append(documentsSection());
 
   // --- Navigation ---------------------------------------------------------
   let continueBtn = null;

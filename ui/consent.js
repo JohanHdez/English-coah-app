@@ -13,6 +13,7 @@ function paragraphs(settings) {
     audio,
     text,
     'Puedes elegir otro proveedor para cada tarea en Ajustes, con tu propia clave; allí verás siempre quién recibe el audio y quién el texto.',
+    'Si añades documentos (tu CV, por ejemplo), se leen en este dispositivo y el archivo no sale de él. Al pedir una respuesta, sólo los fragmentos relacionados (máx. 3000 caracteres) se envían al proveedor de chat que elijas.',
     'Tu huella de voz se queda en este dispositivo: nunca se envía a ningún servidor.',
     'Grabar o transcribir una reunión puede requerir el consentimiento de las demás personas y puede estar prohibido por tu empresa — decides tú.',
   ];

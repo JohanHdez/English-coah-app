@@ -1,7 +1,7 @@
 // App-shell cache, plus vendor/ in a cache of its own. Hugging Face's model
 // weights are cached by transformers.js itself (env.useBrowserCache). vendor/
-// (transformers.js and the 12.9 MB ONNX Runtime WASM) is not precached — it is
-// needed only once enrollment or a meeting runs — but the first time any of it
+// (transformers.js, the 12.9 MB ONNX Runtime WASM and pdf.js with its worker) is not precached — it is
+// needed only once enrollment, a meeting or a PDF runs — but the first time any of it
 // is fetched it is kept, cache-first, under VENDOR_CACHE: otherwise every new
 // embed worker depends on the browser's HTTP cache, which a static host's short
 // max-age makes revalidate, and an evicted WASM downloads again on mobile data.
@@ -9,7 +9,7 @@
 // VENDOR_CACHE. Provider responses must never be cached (they carry the meeting's
 // transcript): the fetch handler writes only the exact SHELL_FILES URLs and
 // same-origin GETs under vendor/; every other request is left to the network.
-const CACHE_NAME = 'ec-shell-v7';
+const CACHE_NAME = 'ec-shell-v8';
 const VENDOR_CACHE = 'ec-vendor-v1';
 const SHELL_FILES = [
   './',
@@ -31,16 +31,20 @@ const SHELL_FILES = [
   'transcribe.js',
   'providers.js',
   'coachdata.js',
+  'docs-extract.js',
+  'docs-record.js',
   'recorder-worklet.js',
   'ui/consent.js',
   'ui/settings.js',
   'ui/enroll.js',
   'ui/meeting.js',
   'ui/coach.js',
+  'ui/documents.js',
   'ui/report.js',
   'lib/coach.js',
   'lib/markdown.js',
   'lib/phrasebook.js',
+  'lib/passages.js',
   'lib/live.js',
   'lib/segmenter.js',
   'lib/stitch.js',
