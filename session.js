@@ -343,7 +343,7 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
   // it still held the old voice for most of its length, so the change lies in
   // that hop: the cut goes to its middle. Measured 2026-10-10 (Phase 3, Task 1):
   // with the shorter closing silence in capture.js, audio-mixed requests went
-  // from 20/64 to 11/62 over the three room fixtures.
+  // from 20/64 to 11/64 over the three room fixtures.
   // `.slice()` (not `.subarray()`) gives each part its own buffer: the real
   // embed/transcribe functions transfer their input's buffer to a worker or into
   // a fetch body, and transferring a *view* detaches the whole shared buffer

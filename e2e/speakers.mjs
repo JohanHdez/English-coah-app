@@ -16,6 +16,7 @@ import { build, LEARNERS, OTHERS, FIXTURES } from './fixtures.mjs';
 import { serve } from '../tools/serve.mjs';
 import { normalize, cosine, meanOf, createSpeakers, classify } from '../speaker.js';
 import { Segmenter, SR } from '../lib/segmenter.js';
+import { MIXED_SILENCE_MS } from '../capture.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -211,7 +212,7 @@ function mixedSegments(name) {
   const { cues } = JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), 'utf8'));
   const segments = [];
   let t = 0;
-  const seg = new Segmenter('mic', (s) => segments.push(s), () => t);
+  const seg = new Segmenter('mixed', (s) => segments.push(s), () => t, { silenceMs: MIXED_SILENCE_MS });
   for (let i = 0; i + BLOCK <= audio.length; i += BLOCK) {
     const samples = audio.slice(i, i + BLOCK);
     let e = 0;
@@ -470,7 +471,7 @@ printSensitivity(runs, [[0.39, 0], [0.45, 0], [0.5, 0], [MATCH_MIN_ADOPTED, MARG
 const replayMs = Date.now() - replayStarted;
 console.log(`\nreplay (calibration + reporting) took ${(replayMs / 1000).toFixed(1)} s`);
 
-console.log('\nMixed segments (lib/segmenter.js over the conversation WAV; both speakers ≥ 0.3 s in one segment):');
+console.log(`\nMixed segments (lib/segmenter.js over the conversation WAV, ${MIXED_SILENCE_MS} ms silence as in capture.js; both speakers ≥ 0.3 s in one segment):`);
 const mixed = {};
 for (const c of CONDITIONS) {
   let segs = 0;
