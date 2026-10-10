@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSession, createUploadQueue, shouldScan, BACKLOG_SKIP_MS, CAP_MS, LATE_MS, LATE_STATUS, DROPPED_MESSAGE } from './session.js';
+import { createSession, createUploadQueue, shouldScan, turnLang, BACKLOG_SKIP_MS, CAP_MS, LATE_MS, LATE_STATUS, DROPPED_MESSAGE } from './session.js';
 import { createSpeakers } from './speaker.js';
 
 // The audio's first sample stands in for the speaker: a real embedding is a
@@ -644,4 +644,49 @@ test('an upload put in front runs before the ones already waiting', async () => 
   hold.resolve();
   await Promise.all([a, b]);
   assert.deepEqual(order, ['b', 'a']);
+});
+
+// Final review, I2: Gemini names no language, so a bilingual meeting reads it from the text.
+test('turnLang: a language the engine reported always wins', () => {
+  assert.equal(turnLang({ reported: 'en', text: 'Hola, ¿cómo están todos?', sessionLang: 'multi' }), 'en');
+});
+
+test('turnLang: a bilingual meeting reads clear Spanish and clear English from the text', () => {
+  assert.equal(turnLang({ reported: null, text: 'Creo que el proyecto está muy bien, pero hay que revisarlo.', sessionLang: 'multi' }), 'es');
+  assert.equal(turnLang({ reported: null, text: 'I think the project is going well, but we need to review it.', sessionLang: 'multi' }), 'en');
+});
+
+test('turnLang: weak evidence keeps the speaker\'s previous language', () => {
+  assert.equal(turnLang({ reported: null, text: 'Kubernetes.', sessionLang: 'multi', previous: 'es' }), 'es');
+  assert.equal(turnLang({ reported: null, text: 'Kubernetes.', sessionLang: 'multi' }), null);
+});
+
+test('turnLang: a pinned meeting is its own language, whatever the text looks like', () => {
+  assert.equal(turnLang({ reported: null, text: 'Gracias por todo.', sessionLang: 'en' }), 'en');
+  assert.equal(turnLang({ reported: null, text: 'Thanks.', sessionLang: 'es' }), 'es');
+  assert.equal(turnLang({ reported: null, text: 'Thanks.' }), null);
+});
+
+test('a bilingual meeting with an engine that names no language tags each bubble from its text', async () => {
+  const { events, onEvent } = collector();
+  const speakers = createSpeakers(ME_LIKE);
+  const texts = [
+    'Creo que el proyecto está muy bien, pero hay que revisarlo.',
+    'I think the project is going well, but we need to review it.',
+    'Kubernetes.',
+  ];
+  let i = 0;
+  const transcribe = async () => ({ text: texts[i++], lang: null });
+  const session = createSession({ embed: fakeEmbed, transcribe, speakers, onEvent, lang: () => 'multi' });
+  session.segment(seg('them', 0));
+  await session.drain();
+  session.segment(seg('me', 2000));
+  await session.drain();
+  session.segment(seg('them', 4000));
+  await session.drain();
+  const last = new Map();
+  for (const e of bubbles(events)) last.set(e.entry.t, e.entry);
+  const entries = [...last.values()].sort((a, b) => a.t - b.t);
+  assert.deepEqual(entries.map((e) => [e.speaker, e.lang]), [['them', 'es'], ['me', 'en'], ['them', 'es']]);
+  assert.deepEqual(session.transcript().map((e) => e.lang), ['es', 'en', 'es']);
 });

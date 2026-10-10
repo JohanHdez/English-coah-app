@@ -5,6 +5,23 @@
 
 import { isJunk, foldIntoTranscript, SR } from './lib/segmenter.js';
 import { classify, assign, correct as correctSpeaker, labelWindows, meanOf } from './speaker.js';
+import { detect } from './lib/langid.js';
+
+// The extension's rule (offscreen.js at ded2c34): when the engine names no
+// language (Gemini always; OpenAI's json models), a bilingual meeting lets the text
+// decide, but only on clear evidence — a one-word turn can score 1.0 for either
+// language — and otherwise keeps the speaker's last language. A pinned meeting
+// has no question to answer.
+export const LANG_CONFIDENCE = 0.5;
+
+export function turnLang({ reported, text, sessionLang, previous = null }) {
+  if (reported) return reported;
+  if (sessionLang === 'multi') {
+    const read = detect(text);
+    return read.lang && read.confidence >= LANG_CONFIDENCE ? read.lang : previous;
+  }
+  return sessionLang === 'es' || sessionLang === 'en' ? sessionLang : null;
+}
 
 // Step 5b: measurement found 28.5 % of segments mix both voices (the segmenter
 // waits 700 ms of silence; people take turns faster). A segment this long or
@@ -115,8 +132,9 @@ export function createUploadQueue({ maxInflight = MAX_INFLIGHT, capMs = CAP_MS, 
   return { enqueue, close, waitingMs: () => waitingMs, active: () => active };
 }
 
-export function createSession({ embed, transcribe, speakers, now = Date.now, onEvent }) {
+export function createSession({ embed, transcribe, speakers, now = Date.now, onEvent, lang = () => null }) {
   const transcript = [];
+  const lastLang = { me: null, them: null };
   let manual = null;
   let seq = 0;
   const nextId = () => seq++;
@@ -257,7 +275,9 @@ export function createSession({ embed, transcribe, speakers, now = Date.now, onE
     const result = outcome.value;
     if (isJunk(result.text)) return;
     const { startedAt, durationMs } = unit.part;
-    foldAndEmit(unit.speaker, result.text, startedAt, durationMs, result.lang, unit.id);
+    const turn = turnLang({ reported: result.lang, text: result.text, sessionLang: lang(), previous: lastLang[unit.speaker] });
+    if (turn) lastLang[unit.speaker] = turn;
+    foldAndEmit(unit.speaker, result.text, startedAt, durationMs, turn, unit.id);
   }
 
   // Groups consecutive equal labels; `startIdx` is the index into `labels`

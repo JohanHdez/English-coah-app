@@ -644,6 +644,7 @@ export function renderMeeting(root, { settings, onEvent }) {
       transcribe: (samples, signal) => transcribe(samples, settings, { signal }),
       speakers,
       onEvent: gate.bind(handleEvent),
+      lang: () => settings.lang || 'en',
     });
     await startRecording(audioContext);
   }
