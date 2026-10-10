@@ -34,9 +34,12 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
   `x-goog-api-key`), never send the voice print anywhere — a key goes only to its own provider's
   host. `providers.js` is the only place a request to a provider is built; a base override
   (`groqBase`, `bases.<id>`, the harness's) and the local provider's `localBase` are honoured only
-  for `localhost` / `127.0.0.1`. The CSP `connect-src` in `index.html` lists exactly the
-  providers' hosts plus loopback and the model hosts — no `https:` wildcard; `providers.test.js`
-  checks it. Claude has no audio input: it is offered for chat only.
+  for `http://localhost` / `http://127.0.0.1` (plain `http`, because that is what the CSP
+  allows). The CSP `connect-src` in `index.html` lists exactly the providers' hosts plus loopback
+  over `http` and the model hosts — no `https:` wildcard; `providers.test.js` checks it. It is a
+  `<meta>` tag, so it binds the page only: a dedicated worker takes its CSP from its own response
+  headers, so `embed-worker.js` and `preview-worker.js` are bound by their code (nothing in them
+  uploads), not by the CSP. Claude has no audio input: it is offered for chat only.
 - The service worker (`sw.js`) never caches audio, POST requests, or cross-origin responses. It
   precaches the app shell, and keeps same-origin `vendor/` files cache-first in their own
   versioned cache (`ec-vendor-v1`, filled on first use — bump it when `vendor/` is replaced);
@@ -57,7 +60,7 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 
 | Path | Responsibility | Task |
 |---|---|---|
-| `lib/segmenter.js` `lib/stitch.js` `lib/queue.js` `lib/langid.js` `lib/live.js` `lib/coach.js` `lib/phrasebook.js` + tests | Copied from the extension, unchanged except import paths (and `lib/live.js`'s result joining, see `docs/ORIGIN.md`) | 1 |
+| `lib/segmenter.js` `lib/stitch.js` `lib/queue.js` `lib/langid.js` `lib/live.js` `lib/coach.js` `lib/phrasebook.js` + tests | Copied from the extension, unchanged except import paths, `lib/live.js`'s result joining, and `lib/coach.js`, whose network layer was replaced by `providers.js` (see `docs/ORIGIN.md`) | 1, P2-4 |
 | `vendor/` | transformers.js + ONNX Runtime Web, copied | 1 |
 | `recorder-worklet.js` | Copied: 100 ms blocks with RMS | 1 |
 | `tools/serve.mjs` | Local static server (localhost is a secure context, so the mic works) | 1 |
@@ -108,21 +111,26 @@ the service worker) afterwards — a stale `sw.js` serves the old shell when off
 
 ## End-to-end
 
+Run every harness command under `caffeinate -i`: on 2026-10-09 the Mac idle-slept in the middle of
+a run (battery, display off), its audio engine stopped, and the run scored 6/20 cues as if the
+pipeline had dropped them. The app now reports that as a lost capture, and `e2e/run.mjs` fails a
+run in which it happens (`capture lost` in its totals).
+
 ```bash
-node e2e/fixtures.mjs                        # synthesise the 28 conversations + 4 enrollments (macOS `say`)
-node e2e/speakers.mjs                        # speaker accuracy: embed in Chrome, replay in Node
-node e2e/speakers.mjs --only=paulina-tessa   # embed only fixtures whose name contains this (not with --replay)
-node e2e/speakers.mjs --replay=e2e/results/speakers-<date>-vectors.json
-                                             # re-decide saved vectors only, no Chrome
-node e2e/smoke.mjs                           # consent → settings → enrollment → meeting → Ajustes → Terminar
-node e2e/run.mjs Paulina Samantha --condition=room     # the whole app on one conversation, scored per cue
-node e2e/run.mjs Mónica Daniel --condition=room
-node e2e/run.mjs Paulina Mónica --condition=room       # options: --condition=clean, --delay=<stand-in ms>, --lang=multi
-node e2e/run.mjs Paulina Samantha --transcribe=gemini --chat=anthropic   # another provider's request shapes
-node e2e/run.mjs Paulina Samantha --live=speech    # live line: on-device pack installed into e2e/.profile first
-node e2e/run.mjs Paulina Samantha --live=preview   # live line: Web Speech hidden, local Whisper lane (WebGPU)
-node e2e/run.mjs Paulina Samantha --live=none      # Web Speech hidden, lane off: the baseline for its cost
-node e2e/run.mjs Paulina Samantha --live=preview --mobile   # a phone (client hints): the lane must not start
+caffeinate -i node e2e/fixtures.mjs                        # synthesise the 28 conversations + 4 enrollments (macOS `say`)
+caffeinate -i node e2e/speakers.mjs                        # speaker accuracy: embed in Chrome, replay in Node
+caffeinate -i node e2e/speakers.mjs --only=paulina-tessa   # embed only fixtures whose name contains this (not with --replay)
+caffeinate -i node e2e/speakers.mjs --replay=e2e/results/speakers-<date>-vectors.json
+                                                           # re-decide saved vectors only, no Chrome
+caffeinate -i node e2e/smoke.mjs                           # consent → settings → enrollment → meeting → Ajustes → Terminar
+caffeinate -i node e2e/run.mjs Paulina Samantha --condition=room     # the whole app on one conversation, scored per cue
+caffeinate -i node e2e/run.mjs Mónica Daniel --condition=room
+caffeinate -i node e2e/run.mjs Paulina Mónica --condition=room       # options: --condition=clean, --delay=<stand-in ms>, --lang=multi
+caffeinate -i node e2e/run.mjs Paulina Samantha --transcribe=gemini --chat=anthropic   # another provider's request shapes
+caffeinate -i node e2e/run.mjs Paulina Samantha --live=speech    # live line: on-device pack installed into e2e/.profile first
+caffeinate -i node e2e/run.mjs Paulina Samantha --live=preview   # live line: Web Speech hidden, local Whisper lane (WebGPU)
+caffeinate -i node e2e/run.mjs Paulina Samantha --live=none      # Web Speech hidden, lane off: the baseline for its cost
+caffeinate -i node e2e/run.mjs Paulina Samantha --live=preview --mobile   # a phone (client hints): the lane must not start
 ```
 
 Names are case-sensitive (`Paulina`, `Mónica`); in zsh quote each pair's names separately, since an
@@ -185,27 +193,24 @@ pipeline's labels and timing, never Whisper's accuracy.
   trip the slowness rule (two passes over 1.5 s in a row) and retire it, which the screen says.
   Bilingual meetings get no live line. Web Speech itself went silent for 3 s at one speaker change
   in Paulina–Samantha (cue 2, every run).
-- Deferred minors from Phase 2 (none blocks a release):
-  - Smoke timing flake, uninvestigated (Task 1).
-  - A split's parts go to the front of the upload queue, so under a queued backlog the cap's
-    `shift()` drops the newest part instead of the oldest audio (Task 2). The 80/140 ms timing test may
-    flake under load; untested: a part's upload failing, `close()` during a split, a scan failure
-    cancelling the whole upload; two tests hang when their assertion fails.
-  - A Wake Lock request pending through both «Terminar» and «Nueva reunión» is kept (guarded by
-    `stopping`, not the epoch; `ui/meeting.js`), and a stale `onSegment` can call `session?.segment`
-    while `session` is null.
-  - `https://localhost` passes the local-base check but the CSP blocks it (generic error); the privacy
-    text overstates what is sent when translation is off; four more in the Task 3 review.
-  - The profile/context debounce (300 ms) drops an edit only if the tab closes inside the window; it
-    should flush on blur, `pagehide` and destroy.
+- Deferred minors from Phase 2 (the final review's triage; the rest were fixed before the friends
+  test):
+  - Untested in `session.test.js`: a split part's upload failing, `close()` during a split's scan,
+    and a scan failure cancelling the whole upload.
   - `lib/markdown.js`: a table swallows a following pipe-containing line; `\|` is unhandled; no
     pathological-input test; the report's reopen path is untested.
   - One desktop harness node process did not exit after saving its results (no children, no sockets),
     uninvestigated.
+  - Android's "Desktop site" mode is untested on a device: one Android friend should check that the
+    120 MB Whisper lane does not start.
+  - The smoke timing flake (Task 1) was never reproduced; re-check it now that runs go under
+    `caffeinate -i`.
+  - Closed, not a bug: a split's parts go to the front of the upload queue, but they belong to a
+    segment captured before everything queued behind them, so the cap's `shift()` still drops the
+    oldest audio.
 - Phase 2 measured only on the stand-in and the owner's one desktop test; the real OpenAI, Gemini and
   Claude endpoints were never called, and Groq only for translation latency.
-- Claude is chat-only (no audio input). Gemini's transcription returns no language, so bilingual
-  meetings decide it from text.
+- Claude is chat-only (no audio input).
 - The speaker model is downloaded from Hugging Face on first use; offline first runs fail.
 - One-word backchannels are lost or mislabelled when they share a segment with the other voice.
 - The split point of segments of 3 s or more is biased up to 0.75 s early.
@@ -221,9 +226,12 @@ pipeline's labels and timing, never Whisper's accuracy.
 - The phone CPU cost is emulated (`--throttle=4`), not measured; the scan skip under a backlog
   (`BACKLOG_SKIP_MS` in `session.js`) saves little, because a whole long segment costs about as
   much to embed as its windows.
-- Chrome's fake microphone (or the loaded machine) occasionally starves a run: an enrollment
-  reported «No te oí lo suficiente», a smoke meeting produced no bubble for 60 s — once each in
-  about ten runs on 2026-10-02, under heavy unrelated load; a rerun passed.
+- Starved runs: an enrollment reported «No te oí lo suficiente», a smoke meeting produced no bubble
+  for 60 s (once each in about ten runs on 2026-10-02), and a run heard 6/20 cues (2026-10-09). The
+  last one is explained: the host Mac idle-slept mid-run and its audio engine stopped (final review,
+  section 3, from the run's own results and `pmset -g log`); the earlier two cannot be attributed
+  after the fact. Hence `caffeinate -i`, and the app's own stall check (2 s period, 3 s without a
+  worklet block → «La captura se detuvo…» with «Reanudar»).
 - The first run downloads about 31.7 MB (measured: the model 6.7 MB from Hugging Face, plus
   `vendor/transformers.js` 1.3 MB and the ONNX Runtime the worker actually loads,
   `ort-wasm-simd-threaded.asyncify.{mjs,wasm}` 23.6 MB, uncompressed). The enrollment's
@@ -237,11 +245,14 @@ pipeline's labels and timing, never Whisper's accuracy.
   a local server), the browser's own translator. The adapters follow the providers' documentation
   as read on 2026-10-09 and the stand-in answers those shapes; neither proves a real endpoint
   accepts them.
-- Gemini transcription reports no language (`lang: null`), so in a bilingual meeting
-  `lib/langid.js` decides from the text alone; Gemini 3.x Flash models think by default, which may
+- Gemini transcription reports no language (`lang: null`, and OpenAI's json models may not either),
+  so in a bilingual meeting `session.js`'s `turnLang` decides from the text with `lib/langid.js`
+  (confidence ≥ 0.5, otherwise the speaker's previous language; a pinned meeting is its own
+  language); Gemini 3.x Flash models think by default, which may
   add latency per segment — not measured.
 - The default chat models (`openai/gpt-oss-120b` on Groq) are reasoning models; translation now
-  uses them instead of Phase 1's `llama-3.1-8b-instant`, and their latency is not measured.
+  uses them instead of Phase 1's `llama-3.1-8b-instant`. Measured on the real Groq (synthetic
+  sentences): p50 0.80 s per bubble (`openai/gpt-oss-20b` 0.55 s); the other providers' are not.
 - `gpt-4o-mini-transcribe` (OpenAI's default) is announced for removal on 2027-02-26; its
   replacement `gpt-transcribe` takes `languages` instead of `language` (the adapter sends neither
   for it).

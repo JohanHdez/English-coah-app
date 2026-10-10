@@ -69,8 +69,10 @@ Claude has no audio input, so it is offered for chat only. Each key is sent only
 provider's host. The voice print and the live line's text never leave the device.
 
 The local server must speak OpenAI's API (`/v1/audio/transcriptions`, `/v1/chat/completions`) and
-live at `http://localhost:*` or `http://127.0.0.1:*`; any other address is refused, and the page's
-CSP only allows the four providers' hosts and loopback. Defaults checked against each provider's
+live at `http://localhost:*` or `http://127.0.0.1:*` (plain `http`: an `https` loopback address is
+refused too); any other address is refused. The page's CSP (`connect-src`) allows only the four
+providers' hosts, loopback over `http`, and the Hugging Face hosts the models download from. It is
+a `<meta>` tag, which binds the page but not its workers; the workers upload nothing. Defaults checked against each provider's
 documentation on 2026-10-09; `gpt-4o-mini-transcribe` is announced for removal on 2027-02-26.
 
 ## The coach
@@ -99,8 +101,8 @@ The coach prompts and limits are copied from the extension (`docs/ORIGIN.md`).
 
 | Stays on the device | Goes out |
 |---|---|
-| Every provider's API key and your voice print (IndexedDB). The voice print is never sent anywhere. | Audio segments of the meeting go to the transcription provider you chose, using your own key, sent only to that provider's host (or your local server) — only while the meeting runs: after «Terminar», segments not yet sent are dropped and uploads still in flight are cancelled. The consent screen and «Ajustes» name who receives the audio and who the text. |
-| The last conversation's transcript, with its Spanish translations (IndexedDB), until you delete it in «Ajustes» or start a new meeting. | |
+| Every provider's API key and your voice print (IndexedDB). The voice print is never sent anywhere. | Audio segments of the meeting go to the transcription provider you chose, using your own key, sent only to that provider's host (or your local server) — while the meeting runs, and for up to 35 s after «Terminar», so that what was already recorded still reaches the transcript; anything left after that is dropped and uploads still in flight are cancelled. The consent screen and «Ajustes» name who receives the audio and who the text. |
+| The last conversation's transcript, with its Spanish translations (IndexedDB), until you delete it in «Ajustes» («Borrar la conversación guardada», available once the meeting has ended) or start a new meeting. | |
 | Speaker embeddings: computed in the browser with the WeSpeaker model (WASM). | The first use downloads the speaker model (6.7 MB) from Hugging Face and the app's runtime (25 MB) from the app's own host; both are cached. |
 | Translation, when the browser has its own Translator (Chrome 138+). | Without it, translation falls back to the chat provider you chose, with the other speaker's text. |
 | The live line («Hablando ahora…») uses the browser's on-device recognition («Instalar reconocimiento de voz» downloads it once, on your tap). Without it, on a device with WebGPU, a local Whisper model (whisper-tiny.en, about 120 MB from Hugging Face the first time) shows it instead: on by default on a computer; on a phone or tablet it downloads nothing until you turn on «Texto en vivo con Whisper local» in «Ajustes» (and it can be turned off there on a computer). Neither is ever a cloud recogniser, and the live text is never stored or sent. Otherwise, or in a bilingual meeting, the screen says the live line is off. | Nothing else. The service worker caches the app shell and `vendor/`, never audio or provider responses. |
@@ -181,7 +183,8 @@ where it says the real Groq):
 - *Whole-app runs for this release* (`node e2e/run.mjs … --condition=room`, Groq stand-in):
   - Paulina / Samantha: 93.6 % of 156 words, 19/20 cues heard, 17 bubbles (4 mixed), latency p50
     2.3 s · p90 8.1 s, 8/22 audio-mixed requests. An earlier run of the same pair heard only 6/20
-    cues (95.1 % of 61 words) and is not counted: capture starved, the known fake-microphone flake.
+    cues (95.1 % of 61 words) and is not counted: the Mac running it went to idle sleep mid-run and the
+    audio engine stopped (harness runs now go under `caffeinate -i`).
   - Mónica / Daniel: 94.9 % of 156 words, 18 bubbles (2 mixed), latency p50 1.4 s · p90 6.4 s,
     5/21 audio-mixed requests.
   - Paulina / Mónica: 96.8 % of 155 words, 17 bubbles (3 mixed), latency p50 1.7 s · p90 5.8 s,
@@ -201,13 +204,18 @@ where it says the real Groq):
   backgrounded app stops the microphone (platform behaviour, not measured on a device here). When
   the app comes back it checks the microphone and the audio engine; if capture stopped it says
   «La captura se detuvo mientras la app estaba en segundo plano.» and offers «Reanudar», which
-  continues the same meeting.
+  continues the same meeting. While recording it also checks every 2 s that audio is still
+  arriving: after 3 s without any (a laptop that slept, an audio engine the system turned off) it
+  says «La captura se detuvo: hace unos segundos que no llega audio del micrófono.» with the same
+  «Reanudar».
 - Synthetic voices are more stable than people. The thresholds are calibrated on them and must be
   recalibrated with real voices.
 - The tab or a remote call is not captured; only what the microphone hears.
 - Claude has no audio input: choose Groq, OpenAI, Gemini or a local server for «Transcripción».
 - Gemini's transcription reports no language, so in a bilingual meeting the language of each
-  bubble is decided from its text alone (`lib/langid.js`). Gemini 3.x Flash models think by default;
+  bubble is decided from its text (`lib/langid.js`, the extension's rule: only on clear evidence,
+  otherwise the speaker's previous language); a Spanish bubble gets no translation and the report
+  sees it as Spanish. A response Gemini blocks shows a `[transcripción]` error instead of vanishing. Gemini 3.x Flash models think by default;
   the added latency per segment is not measured.
 - Bilingual meetings get no live line (the recogniser hears one language), and the Whisper preview
   lane is English-only and needs WebGPU.
