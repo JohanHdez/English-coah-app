@@ -2,7 +2,13 @@
 // pdf.js, Word by reading word/document.xml out of the zip, plain text as UTF-8.
 // Nothing here uploads, and nothing in a document is ever executed or rendered.
 
-export const LIMITS = { files: 10, bytes: 2 * 1024 * 1024, chars: 200000 };
+export const LIMITS = { files: 10, bytes: 2 * 1024 * 1024, chars: 200000, pages: 100 };
+
+// The character cap is the only other stop in the page loop, and a page with no text
+// adds none: a 2 MB PDF of thousands of empty pages would read for minutes behind
+// «Leyendo… N de M» with no way to cancel. A content stream that inflates to gigabytes
+// inside one page is beyond what pdf.js lets a caller bound; the deadline ends the wait.
+export const PDF_DEADLINE_MS = 60000;
 
 // word/document.xml wraps every run of text in markup (run and paragraph properties,
 // revision ids); 40 bytes of XML per character of text, 8 MB at the 200 000-character
@@ -165,17 +171,23 @@ function tooLong() {
   return new DocumentError(`El documento supera los ${n} caracteres de texto.`);
 }
 
-async function pdfText(bytes, { loadPdf, onPage }) {
+async function pdfText(bytes, { loadPdf, onPage, deadlineMs = PDF_DEADLINE_MS }) {
   let task;
+  let timer;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new DocumentError('El PDF tarda demasiado en leerse.')), deadlineMs);
+  });
+  const within = (p) => Promise.race([p, late]);
   try {
-    const pdfjs = await loadPdf();
+    const pdfjs = await within(loadPdf());
     task = pdfjs.getDocument({ data: bytes, isEvalSupported: false, disableFontFace: true, verbosity: 0 });
-    const doc = await task.promise;
+    const doc = await within(task.promise);
+    if (doc.numPages > LIMITS.pages) throw new DocumentError(`El PDF tiene más de ${LIMITS.pages} páginas.`);
     const pages = [];
     let chars = 0;
     for (let n = 1; n <= doc.numPages; n++) {
-      const page = await doc.getPage(n);
-      const { items } = await page.getTextContent();
+      const page = await within(doc.getPage(n));
+      const { items } = await within(page.getTextContent());
       const text = items.map((it) => (it.str || '') + (it.hasEOL ? '\n' : '')).join('');
       page.cleanup?.();
       chars += text.length;
@@ -188,6 +200,7 @@ async function pdfText(bytes, { loadPdf, onPage }) {
     if (e instanceof DocumentError) throw e;
     throw new DocumentError(e?.name === 'PasswordException' ? 'El PDF está protegido con contraseña.' : BAD_PDF);
   } finally {
+    clearTimeout(timer);
     // The loading task owns the worker; destroying it frees the document too.
     if (task) await task.destroy().catch(() => {});
   }
@@ -212,12 +225,12 @@ function plainText(bytes) {
 }
 
 // onPage(n, of) reports PDF progress, for «Leyendo… N páginas».
-export async function extractText(file, { loadPdf = loadPdfjs, onPage } = {}) {
+export async function extractText(file, { loadPdf = loadPdfjs, onPage, deadlineMs } = {}) {
   const kind = kindOf(file);
   if (!kind) throw new DocumentError(UNSUPPORTED);
   if (file.size > LIMITS.bytes) throw new DocumentError('El archivo supera los 2 MB.');
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const result = kind === 'pdf' ? await pdfText(bytes, { loadPdf, onPage })
+  const result = kind === 'pdf' ? await pdfText(bytes, { loadPdf, onPage, deadlineMs })
     : kind === 'docx' ? await docxFileText(bytes)
       : plainText(bytes);
   if (result.text.length > LIMITS.chars) throw tooLong();

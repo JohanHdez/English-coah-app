@@ -118,4 +118,4 @@ settingsBtn.addEventListener('click', async () => {
 });
 
 app.textContent = 'Cargando…';
-route();
+route().catch((e) => { app.textContent = e?.message || String(e); });

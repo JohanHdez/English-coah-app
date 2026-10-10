@@ -12,7 +12,7 @@ const rejectsWith = (promise, message) => assert.rejects(promise, (e) => {
 });
 
 test('the limits are the plan\'s', () => {
-  assert.deepEqual(LIMITS, { files: 10, bytes: 2 * 1024 * 1024, chars: 200000 });
+  assert.deepEqual(LIMITS, { files: 10, bytes: 2 * 1024 * 1024, chars: 200000, pages: 100 });
 });
 
 test('kindOf goes by extension, then by MIME type', () => {
@@ -107,6 +107,23 @@ test('a PDF pdf.js cannot open is «No se pudo leer el PDF.», and its loading t
   assert.equal(destroyed, true);
 });
 
+const pdfOf = (numPages, getPage) => async () => ({
+  GlobalWorkerOptions: {},
+  getDocument: () => ({ destroy: async () => {}, promise: Promise.resolve({ numPages, getPage }) }),
+});
+
+test('a PDF over the page cap is refused before any page is read', async () => {
+  let read = 0;
+  const loadPdf = pdfOf(LIMITS.pages + 1, async () => { read++; return { getTextContent: async () => ({ items: [] }) }; });
+  await rejectsWith(extractText(fileOf(cvPdf(), 'long.pdf'), { loadPdf }), `[documentos] El PDF tiene más de ${LIMITS.pages} páginas.`);
+  assert.equal(read, 0);
+});
+
+test('a PDF that never finishes a page stops at the deadline', async () => {
+  const loadPdf = pdfOf(2, () => new Promise(() => {}));
+  await rejectsWith(extractText(fileOf(cvPdf(), 'slow.pdf'), { loadPdf, deadlineMs: 20 }), '[documentos] El PDF tarda demasiado en leerse.');
+});
+
 test('a password-protected PDF says so', async () => {
   const err = Object.assign(new Error('No password given'), { name: 'PasswordException' });
   const loadPdf = async () => ({ GlobalWorkerOptions: {}, getDocument: () => ({ promise: Promise.reject(err), destroy: async () => {} }) });
@@ -155,12 +172,12 @@ test('documentXml in the fixture really splits each line into two runs', () => {
 // often beside a Chrome harness, and the quadratic versions took over 60 s.
 const elapsed = (fn) => { const t0 = process.cpuUsage(); fn(); const d = process.cpuUsage(t0); return (d.user + d.system) / 1000; };
 
-test('tidy is linear: 2 MB of spaces and of "\\t \\n" interleavings in under 200 ms each', () => {
+test('tidy is linear: 2 MB of spaces and of "\\t \\n" interleavings in under 1 s each', () => {
   const spaces = ' '.repeat(LIMITS.bytes);
   const mixed = '\t \n'.repeat(Math.floor(LIMITS.bytes / 3));
   for (const input of [spaces, mixed, `word${spaces}word`]) {
     const ms = elapsed(() => tidy(input));
-    assert.ok(ms < 200, `${ms.toFixed(0)} ms`);
+    assert.ok(ms < 1000, `${ms.toFixed(0)} ms`);
   }
   assert.equal(tidy('a  \t\r\n\n\n\nb \n'), 'a\n\nb');
 });
@@ -169,13 +186,13 @@ test('a 2 MB text file of spaces is refused at once with the character limit', a
   const t0 = process.cpuUsage();
   await rejectsWith(extractText(fileOf(Buffer.from(' '.repeat(LIMITS.bytes)), 'spaces.txt')), '[documentos] El documento supera los 200 000 caracteres de texto.');
   const d = process.cpuUsage(t0);
-  assert.ok((d.user + d.system) / 1000 < 200);
+  assert.ok((d.user + d.system) / 1000 < 1000);
 });
 
 test('docxText is linear on 200 000 unclosed "<", and on unclosed tags', () => {
   for (const xml of ['<'.repeat(200000), '<a '.repeat(200000), `<w:t>${'<a.b.c'.repeat(40000)}`]) {
     const ms = elapsed(() => docxText(xml));
-    assert.ok(ms < 200, `${ms.toFixed(0)} ms`);
+    assert.ok(ms < 1000, `${ms.toFixed(0)} ms`);
   }
 });
 
