@@ -98,7 +98,8 @@ Kept as copied: every prompt, `parseReply`, `parseJsonLoose`, `runsOf`, `turnsTo
   are not sent (`buildChat` sends neither).
 - `askReply` takes an optional `documents` (the records of «Mis documentos»); `documentsQuery`/`documentsBlock`
   add the best passages (BM25, `lib/passages.js`) up to `DOCUMENTS_MAX_CHARS` = 3000 after the profile and the
-  context, and nothing when none is enabled or none scores. `askReport` does not use them (Phase 3, Task 4).
+  context, and nothing when none is enabled or none scores. `askReport` does not use them (Phase 3, Task 4). Document text is neutralised (`neutralise`): any line
+  naming the block's delimiters loses its dashes, and the header says the content is data, never instructions.
 - `CoachError` messages carry the `[coach]` stage prefix.
 - `askReply`/`askReport` take two optional extras: `signal` and `chat` (defaults to `callChat`; the tests
   inject a stub).

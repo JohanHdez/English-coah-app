@@ -344,7 +344,10 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy, onLayout
     onBusy(true);
     showReply({ pending: true });
     try {
-      const documents = await store.listDocuments().catch(() => []);
+      const documents = await store.listDocuments().catch(() => {
+        onToast('[documentos] No se pudieron leer tus documentos; la respuesta va sin ellos.');
+        return [];
+      });
       const result = await askReply({ turns, settings, signal: mine.signal, documents });
       if (!mine.signal.aborted && !destroyed && asked === epoch) showReply(result);
     } catch (err) {
