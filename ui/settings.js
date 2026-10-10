@@ -14,7 +14,7 @@ import * as store from '../store.js';
 import { profileFields } from './coach.js';
 import { CATALOGUE } from '../lib/phrasebook.js';
 import { categoryActive, setCategoryActive } from '../coachdata.js';
-import { providersFor, providerById, routing, isConfigured, isLocalBase } from '../providers.js';
+import { providersFor, providerById, routing, isConfigured, isChatConfigured, isLocalBase } from '../providers.js';
 import { isMobile, deviceFacts, previewEnabled } from '../live-lane.js';
 
 function field(labelText, input) {
@@ -46,7 +46,12 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
   route.className = 'routing';
   const audioLine = document.createElement('p');
   const textLine = document.createElement('p');
-  route.append(audioLine, textLine);
+  // Someone who pastes only a transcription key otherwise gets a meeting with no
+  // coach and, without the browser's Translator, no Spanish, and nothing saying why.
+  const chatWarning = document.createElement('p');
+  chatWarning.className = 'hint error';
+  chatWarning.hidden = true;
+  route.append(audioLine, textLine, chatWarning);
 
   function picker(legendText, job, key) {
     const select = document.createElement('select');
@@ -136,10 +141,19 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
     return block;
   }
 
-  function refresh() {
+  function refreshRouting() {
     const { audio, text } = routing(settings);
     audioLine.textContent = audio;
     textLine.textContent = text;
+    const label = providerById(settings.chatProvider)?.label || settings.chatProvider;
+    chatWarning.textContent = settings.chatProvider === 'local'
+      ? 'Falta configurar el servidor local de traducción y coach: no habrá coach, y solo habrá traducción si el navegador traduce por sí mismo.'
+      : `Falta la API key de ${label}: no habrá coach, y solo habrá traducción si el navegador traduce por sí mismo.`;
+    chatWarning.hidden = isChatConfigured(settings);
+  }
+
+  function refresh() {
+    refreshRouting();
     details.textContent = '';
     const chosen = new Map();
     chosen.set(settings.transcribeProvider, ['transcribe']);
@@ -174,7 +188,7 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
   const translateInput = document.createElement('input');
   translateInput.type = 'checkbox';
   translateInput.checked = settings.translate !== false;
-  translateInput.addEventListener('change', () => patch({ translate: translateInput.checked }));
+  translateInput.addEventListener('change', () => { patch({ translate: translateInput.checked }); refreshRouting(); });
   const translateLabel = document.createElement('label');
   translateLabel.className = 'checkbox';
   translateLabel.append(translateInput, document.createTextNode('Traducir al español'));
@@ -292,6 +306,7 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
 
   function updateContinue() {
     if (continueBtn) continueBtn.disabled = !isConfigured(settings);
+    refreshRouting();
   }
   refresh();
 

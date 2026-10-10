@@ -80,7 +80,9 @@ test('the CSP connect-src lists exactly the providers\' hosts, loopback, and the
 });
 
 test('isLocalBase accepts only localhost and 127.0.0.1', () => {
-  for (const ok of ['http://localhost:8000', 'http://127.0.0.1:11434/', 'http://localhost', 'https://localhost:9000']) assert.ok(isLocalBase(ok), ok);
+  for (const ok of ['http://localhost:8000', 'http://127.0.0.1:11434/', 'http://localhost']) assert.ok(isLocalBase(ok), ok);
+  // The CSP allows loopback over http only; https would pass here and fail in fetch.
+  for (const csp of ['https://localhost:9000', 'https://127.0.0.1']) assert.equal(isLocalBase(csp), false, csp);
   for (const bad of ['https://evil.example', 'http://192.168.1.2:8000', 'http://localhost.evil.com', 'http://127.0.0.1.nip.io', 'ftp://localhost', '', null, 'not a url', 'http://user@evil.example#@localhost']) {
     assert.equal(isLocalBase(bad), false, String(bad));
   }
@@ -128,6 +130,14 @@ test('routing names who receives the audio and who receives text', () => {
   const local = routing(migrateSettings({ transcribeProvider: 'local', chatProvider: 'local' }));
   assert.match(local.audio, /servidor local/);
   assert.match(local.audio, /no sale de/);
+});
+
+test('routing does not claim conversation text is sent for translation when translation is off', () => {
+  const on = routing(migrateSettings({ transcribeProvider: 'groq', chatProvider: 'groq', translate: true }));
+  assert.match(on.text, /para la traducción/);
+  const off = routing(migrateSettings({ transcribeProvider: 'groq', chatProvider: 'groq', translate: false }));
+  assert.doesNotMatch(off.text, /traducción/);
+  assert.match(off.text, /solo se envía a Groq cuando pides/);
 });
 
 // --- Transcription adapters ---------------------------------------------------
@@ -181,7 +191,16 @@ test('Gemini transcription: generateContent with the WAV inline as base64, no ke
     parseTranscribe('gemini', { candidates: [{ content: { parts: [{ text: 'Hello ' }, { text: 'there.\n' }] } }] }),
     { text: 'Hello there.', lang: null },
   );
-  assert.deepEqual(parseTranscribe('gemini', { candidates: [] }), { text: '', lang: null });
+  assert.deepEqual(parseTranscribe('gemini', { candidates: [{ content: { parts: [{ text: '' }] }, finishReason: 'STOP' }] }), { text: '', lang: null });
+});
+
+test('a blocked Gemini transcription is a staged Spanish error, not empty text', () => {
+  assert.throws(() => parseTranscribe('gemini', { candidates: [] }), /^Error: \[transcripción\] Gemini bloqueó este fragmento \(sin respuesta\)/);
+  assert.throws(() => parseTranscribe('gemini', { promptFeedback: { blockReason: 'SAFETY' } }), /^Error: \[transcripción\] Gemini bloqueó este fragmento \(SAFETY\)/);
+  assert.throws(() => parseTranscribe('gemini', { candidates: [{ finishReason: 'RECITATION' }] }), /\(RECITATION\)/);
+  assert.throws(() => parseTranscribe('gemini', { candidates: [{ content: { parts: [{ text: 'half' }] }, finishReason: 'SAFETY' }] }), /\(SAFETY\)/);
+  assert.deepEqual(parseTranscribe('gemini', { candidates: [{ content: { parts: [{ text: 'cut short' }] }, finishReason: 'MAX_TOKENS' }] }), { text: 'cut short', lang: null });
+  assert.throws(() => parseTranscribe('gemini', { candidates: [{ content: { parts: [] }, finishReason: 'MAX_TOKENS' }] }), /\(MAX_TOKENS\)/);
 });
 
 test('Claude is refused for transcription', () => {
@@ -520,4 +539,10 @@ test('redact covers Gemini- and Anthropic-shaped keys and any literal key given'
   assert.equal(redact('k sk-ant-api03-abcdef x'), 'k «API key oculta» x');
   assert.equal(redact('k plain-local-secret x', ['plain-local-secret']), 'k «API key oculta» x');
   assert.equal(redact('nothing', ['']), 'nothing');
+});
+
+test('a short local key cannot garble error messages', () => {
+  assert.equal(redact('Model not found: llama3.2', ['a']), 'Model not found: llama3.2');
+  assert.equal(redact('the model is loading', ['mode']), 'the model is loading');
+  assert.equal(redact('k 12345678 x', ['12345678']), 'k «API key oculta» x');
 });

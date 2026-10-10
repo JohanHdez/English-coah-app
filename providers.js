@@ -104,7 +104,9 @@ export function isLocalBase(base) {
   if (!base || typeof base !== 'string') return false;
   let url;
   try { url = new URL(base); } catch { return false; }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  // http only: the CSP's connect-src names http://localhost:* and
+  // http://127.0.0.1:*, so an https loopback base would fail with a generic error.
+  if (url.protocol !== 'http:') return false;
   if (url.username || url.password) return false;
   return url.hostname === 'localhost' || url.hostname === '127.0.0.1';
 }
@@ -138,7 +140,9 @@ export function routing(settings) {
   const name = (id) => (id === 'local' ? LOCAL_ROUTE : providerById(id)?.label || id);
   return {
     audio: `El audio de la reunión se envía a ${name(settings.transcribeProvider)} para transcribirse.`,
-    text: `El texto de la conversación se envía a ${name(settings.chatProvider)} para la traducción (cuando el navegador no traduce por sí mismo) y el coach.`,
+    text: settings.translate === false
+      ? `El texto de la conversación solo se envía a ${name(settings.chatProvider)} cuando pides al coach una «Respuesta» o el informe.`
+      : `El texto de la conversación se envía a ${name(settings.chatProvider)} para la traducción (cuando el navegador no traduce por sí mismo) y el coach.`,
   };
 }
 
@@ -227,8 +231,22 @@ const geminiText = (json) => (json?.candidates?.[0]?.content?.parts || [])
   .join('')
   .trim();
 
+// https://ai.google.dev/api/generate-content#FinishReason: a prompt blocked
+// outright has no candidates, a reply stopped by a filter has another
+// finishReason. Either way the segment's words are gone, which the screen says.
+function geminiTranscript(json) {
+  const candidate = json?.candidates?.[0];
+  const text = geminiText(json);
+  const reason = candidate ? candidate.finishReason : json?.promptFeedback?.blockReason || 'sin respuesta';
+  const truncated = reason === 'MAX_TOKENS' && text;
+  if (!candidate || (reason && reason !== 'STOP' && reason !== 'FINISH_REASON_UNSPECIFIED' && !truncated)) {
+    throw new Error(`[transcripción] Gemini bloqueó este fragmento (${reason}); sus palabras se perdieron.`);
+  }
+  return text;
+}
+
 export function parseTranscribe(id, json) {
-  if (id === 'gemini') return { text: geminiText(json), lang: null };
+  if (id === 'gemini') return { text: geminiTranscript(json), lang: null };
   const reported = typeof json?.language === 'string' ? json.language
     : Array.isArray(json?.languages) ? json.languages[0] : null;
   return { text: typeof json?.text === 'string' ? json.text.trim() : '', lang: langCode(reported) };
@@ -333,9 +351,13 @@ export const MAX_WAIT_MS = 8000;
 // header's value in one. Groq gsk_, OpenAI/Anthropic sk-, xAI xai-, Google AIza.
 const KEY_SHAPED = /(gsk_[A-Za-z0-9_-]{6,}|sk-[A-Za-z0-9_-]{6,}|xai-[A-Za-z0-9_-]{6,}|AIza[A-Za-z0-9_-]{6,})/g;
 const HIDDEN = '«API key oculta»';
+// A literal key shorter than this is not redacted by value: a one-to-seven
+// character local key ("abc") would cut words out of every message, and it is too
+// short to be a secret worth hiding from the learner's own screen.
+const MIN_LITERAL_KEY = 8;
 export function redact(text, keys = []) {
   let out = String(text ?? '');
-  for (const key of keys) if (key) out = out.split(key).join(HIDDEN);
+  for (const key of keys) if (key && key.length >= MIN_LITERAL_KEY) out = out.split(key).join(HIDDEN);
   return out.replace(KEY_SHAPED, HIDDEN);
 }
 
