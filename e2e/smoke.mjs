@@ -214,7 +214,7 @@ async function main() {
     const deleteTranscriptState = await chrome.evaluate(session, `
       (() => {
         const btn = [...document.querySelectorAll('#overlay button')].find((b) => b.textContent === 'Borrar la conversación guardada');
-        return btn ? { disabled: btn.disabled, hint: btn.parentElement.textContent.includes('Termina la reunión para borrarla') } : null;
+        return btn ? { disabled: btn.disabled, hint: [...btn.parentElement.querySelectorAll('.notice')].some((p) => !p.hidden && p.textContent.includes('Termina la reunión para borrarla')) } : null;
       })()
     `);
     if (!deleteTranscriptState?.disabled || !deleteTranscriptState?.hint) {
@@ -398,11 +398,20 @@ async function main() {
     await tap(chrome, session, '.meeting .resume-capture');
     await waitFor(() => chrome.evaluate(session, 'window.__hold.taken'), { label: 'the held microphone request' });
     const t3 = Date.now();
-    await tap(chrome, session, '.meeting .controls .stop-meeting');
+    // Ajustes stays open through the drain: the delete button must enable itself
+    // when the meeting finishes, without reopening.
+    await chrome.evaluate(session, "document.getElementById('settingsBtn').click();");
+    await waitFor(() => chrome.evaluate(session, "document.querySelector('#overlay .screen.settings') != null"), { label: 'Ajustes to open before «Terminar»' });
+    const deleteState = "[...document.querySelectorAll('#overlay .danger-zone button')].find((b) => b.textContent === 'Borrar la conversación guardada')?.disabled";
+    if (await chrome.evaluate(session, deleteState) !== true) throw new Error('[smoke] «Borrar la conversación guardada» was enabled in a live meeting');
+    await chrome.evaluate(session, "document.querySelector('.meeting .controls .stop-meeting').click();");
     await waitFor(
       () => chrome.evaluate(session, "document.querySelector('.meeting .status')?.textContent === 'Reunión terminada.'"),
       { timeoutMs: DRAIN_TIMEOUT_MS + 5000, label: '"Terminar" to complete (drain, then "Reunión terminada.")' },
     );
+    if (await chrome.evaluate(session, deleteState) !== false) throw new Error('[smoke] «Borrar la conversación guardada» stayed disabled after the meeting finished');
+    console.log('settings: «Borrar la conversación guardada» enabled itself when the meeting finished');
+    await chrome.evaluate(session, "[...document.querySelectorAll('#overlay button')].find((b) => b.textContent === 'Volver').click();");
     console.log(`meeting: "Terminar" completed in ${((Date.now() - t3) / 1000).toFixed(1)} s`);
     const newMeetingShown = await chrome.evaluate(session, `
       [...document.querySelectorAll('.meeting .controls button')].some((b) => b.textContent === 'Nueva reunión' && !b.hidden)
@@ -541,7 +550,7 @@ async function main() {
     await waitFor(() => chrome.evaluate(session, "document.querySelector('#overlay .screen.settings') != null"), { label: 'the settings overlay after «Terminar»' });
     const deleteAfterStop = await chrome.evaluate(session, `(() => {
       const btn = [...document.querySelectorAll('#overlay button')].find((b) => b.textContent === 'Borrar la conversación guardada');
-      return btn ? { disabled: btn.disabled, hint: btn.parentElement.textContent.includes('Termina la reunión para borrarla') } : null;
+      return btn ? { disabled: btn.disabled, hint: [...btn.parentElement.querySelectorAll('.notice')].some((p) => !p.hidden && p.textContent.includes('Termina la reunión para borrarla')) } : null;
     })()`);
     if (!deleteAfterStop || deleteAfterStop.disabled || deleteAfterStop.hint) {
       throw new Error(`[smoke] "Borrar la conversación guardada" is not usable after «Terminar»: ${JSON.stringify(deleteAfterStop)}`);

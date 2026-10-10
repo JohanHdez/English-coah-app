@@ -92,6 +92,7 @@ function openSettingsOverlay() {
     endMeeting: endActiveMeeting,
     meetingLive: activeMeeting.live,
     forgetMeeting: activeMeeting.forget,
+    onMeetingChange: activeMeeting.onChange,
   });
   if (typeof result === 'function') overlayTeardown = result;
 }
@@ -108,7 +109,7 @@ async function route() {
   if (!print || print.model !== MODEL_ID) { mount(renderEnroll, { onDone: route }); return; }
 
   mount(renderMeeting, { settings, onEvent: reportEvent });
-  activeMeeting = { settings, live: teardown.live, forget: teardown.forget };
+  activeMeeting = { settings, live: teardown.live, forget: teardown.forget, onChange: teardown.onChange };
 }
 
 settingsBtn.addEventListener('click', async () => {

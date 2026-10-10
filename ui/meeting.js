@@ -601,6 +601,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   // or suspended the context; nothing reports it, so it is checked on return.
   function onVisibility() {
     if (document.visibilityState !== 'visible' || !running) return;
+    captureHandle?.returned();
     if (checkCapture()) requestWakeLock();
   }
   document.addEventListener('visibilitychange', onVisibility);
@@ -800,6 +801,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     stopping = true;
     captureEpoch++;
     running = false;
+    notifyMeetingChange();
     stopStallCheck();
     resumeBtn.hidden = true;
     talkBtn.disabled = true;
@@ -831,6 +833,7 @@ export function renderMeeting(root, { settings, onEvent }) {
     setStatus('Reunión terminada.');
     reportBtn.hidden = false;
     newMeetingBtn.hidden = false;
+    notifyMeetingChange();
   });
 
   newMeetingBtn.addEventListener('click', async () => {
@@ -860,6 +863,8 @@ export function renderMeeting(root, { settings, onEvent }) {
 
   // Only between meetings: a running one re-persists after every bubble, and one
   // still draining after «Terminar» persists once more when it finishes.
+  const changeListeners = new Set();
+  const notifyMeetingChange = () => changeListeners.forEach((fn) => fn());
   const meetingLive = () => running || initPending > 0 || (stopping && !finishedAt);
 
   async function forget() {
@@ -898,5 +903,6 @@ export function renderMeeting(root, { settings, onEvent }) {
   }
   cleanup.live = meetingLive;
   cleanup.forget = forget;
+  cleanup.onChange = (fn) => { changeListeners.add(fn); return () => changeListeners.delete(fn); };
   return cleanup;
 }

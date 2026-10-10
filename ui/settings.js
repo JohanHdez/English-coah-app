@@ -26,7 +26,7 @@ function field(labelText, input) {
   return label;
 }
 
-export function renderSettings(root, { settings, forced, onBack, onReenroll, endMeeting, meetingLive, forgetMeeting }) {
+export function renderSettings(root, { settings, forced, onBack, onReenroll, endMeeting, meetingLive, forgetMeeting, onMeetingChange }) {
   root.textContent = '';
 
   const section = document.createElement('section');
@@ -284,23 +284,27 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
   // every bubble, so a delete then would be silently undone within seconds by the
   // very next one — disabled instead of pretending it worked. Between meetings the
   // screen underneath is emptied too, so nothing on it writes the record back.
-  if (meetingLive?.()) {
-    deleteTranscript.disabled = true;
-    const hint = document.createElement('p');
-    hint.className = 'notice';
-    hint.textContent = 'Termina la reunión para borrarla.';
-    danger.append(hint);
-  } else {
-    deleteTranscript.addEventListener('click', async () => {
-      if (!confirm('¿Borrar la última conversación guardada en este dispositivo?')) return;
-      if (forgetMeeting) {
-        if (!await forgetMeeting()) { setNotice('Termina la reunión para borrarla.'); return; }
-      } else {
-        await store.del('lastTranscript');
-      }
-      setNotice('Conversación borrada.');
-    });
+  const deleteHint = document.createElement('p');
+  deleteHint.className = 'notice';
+  deleteHint.textContent = 'Termina la reunión para borrarla.';
+  danger.append(deleteHint);
+  function syncDeleteTranscript() {
+    const live = !!meetingLive?.();
+    deleteTranscript.disabled = live;
+    deleteHint.hidden = !live;
   }
+  syncDeleteTranscript();
+  deleteTranscript.addEventListener('click', async () => {
+    if (meetingLive?.()) return;
+    if (!confirm('¿Borrar la última conversación guardada en este dispositivo?')) return;
+    if (forgetMeeting) {
+      if (!await forgetMeeting()) { setNotice('Termina la reunión para borrarla.'); return; }
+    } else {
+      await store.del('lastTranscript');
+    }
+    setNotice('Conversación borrada.');
+  });
+  const unsubscribe = onMeetingChange?.(syncDeleteTranscript);
 
   section.append(danger);
 
@@ -320,4 +324,5 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
   }
 
   root.append(section);
+  return () => unsubscribe?.();
 }
