@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import { Chrome } from './cdp.mjs';
 import { writeDocsFixtures, cvText, KNOWN_SENTENCE } from './docs-fixtures.mjs';
 import { startMockGroq } from './mock-groq.mjs';
+import { DOCUMENTS_SENT } from '../docs-record.js';
 import { PROFILE, FIXTURES, sleep, waitFor, startServer, openPage, assertNoExternal, enrollViaUi, resetStorage, startMeeting, tap, DRAIN_TIMEOUT_MS, FAKE_KEY } from './harness.mjs';
 
 const AUDIO = join(FIXTURES, 'enroll-paulina-room.wav');
@@ -98,7 +99,7 @@ async function main() {
     if (!/audio de la reunión se envía a Groq/.test(consentText) || !/texto de la conversación se envía a Groq/.test(consentText)) {
       throw new Error(`[smoke] the consent screen does not say who receives the audio and the text: ${consentText}`);
     }
-    if (!/documentos/.test(consentText) || !/máx\. 3000 caracteres/.test(consentText)) throw new Error('[smoke] the consent screen does not mention documents');
+    if (!consentText.includes(DOCUMENTS_SENT)) throw new Error('[smoke] the consent screen does not say what is sent of the documents');
     await chrome.evaluate(session, `
       [...document.querySelectorAll('button')].find((b) => b.textContent === 'Entendido').click();
     `);
@@ -168,7 +169,9 @@ async function main() {
       if (!(n > expectChars * 0.8 && n < expectChars * 1.2) || !d.on) throw new Error(`[smoke] unexpected document row: ${JSON.stringify(d)} (CV is ~${expectChars} characters)`);
     }
     const privacyLine = await chrome.evaluate(session, "document.querySelector('.documents .hint')?.textContent");
-    if (!/El archivo no sale de tu dispositivo/.test(privacyLine) || !/máx\. 3000 caracteres/.test(privacyLine)) throw new Error(`[smoke] privacy line missing: ${privacyLine}`);
+    if (!/El archivo no sale de tu dispositivo/.test(privacyLine) || !privacyLine.includes(DOCUMENTS_SENT)) throw new Error(`[smoke] privacy line missing: ${privacyLine}`);
+    const labels = await chrome.evaluate(session, "JSON.stringify([...document.querySelectorAll('.documents .doc')].map((li) => [li.querySelector('input[type=checkbox]').getAttribute('aria-label'), li.querySelector('.doc-delete').getAttribute('aria-label')]))");
+    if (!JSON.parse(labels).every(([use, del]) => /^Usar .+ en las reuniones$/.test(use) && /^Borrar .+/.test(del))) throw new Error(`[smoke] document rows lack names: ${labels}`);
     await chrome.evaluate(session, "document.querySelector('.documents .doc input[type=checkbox]').click()");
     await waitFor(() => chrome.evaluate(session, "import('./store.js').then((m) => m.listDocuments()).then((d) => d.filter((x) => !x.enabled).length === 1)"), { label: 'the switch to persist' });
     const storedDocs = await chrome.evaluate(session, "import('./store.js').then((m) => m.listDocuments()).then((d) => d.map((x) => ({ keys: Object.keys(x).sort().join(), p: x.passages.length, bytes: JSON.stringify(x).includes('%PDF') })))");

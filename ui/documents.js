@@ -3,7 +3,7 @@
 
 import * as store from '../store.js';
 import { extractText, LIMITS, DocumentError } from '../docs-extract.js';
-import { makeRecord, checkRoom } from '../docs-record.js';
+import { makeRecord, checkRoom, DOCUMENTS_SENT } from '../docs-record.js';
 
 const fmtNum = (n) => String(n).replace(/\B(?=(\d{3})+$)/g, ' ');
 const fmtSize = (bytes) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
@@ -17,7 +17,7 @@ export function documentsSection() {
 
   const privacy = document.createElement('p');
   privacy.className = 'hint';
-  privacy.textContent = 'El archivo no sale de tu dispositivo. Al pedir una respuesta, se envían al proveedor de chat sólo los fragmentos relacionados (máx. 3000 caracteres).';
+  privacy.textContent = `El archivo no sale de tu dispositivo. ${DOCUMENTS_SENT}`;
 
   const list = document.createElement('ul');
   list.className = 'doc-list';
@@ -62,6 +62,7 @@ export function documentsSection() {
     toggle.type = 'checkbox';
     toggle.checked = doc.enabled;
     toggle.addEventListener('change', () => store.setDocumentEnabled(doc.id, toggle.checked).catch((e) => say(`[documentos] ${e?.message || e}`, true)));
+    toggle.setAttribute('aria-label', `Usar ${doc.name} en las reuniones`);
     const use = document.createElement('label');
     use.className = 'checkbox';
     use.append(toggle, document.createTextNode('Usar en las reuniones'));
@@ -70,11 +71,16 @@ export function documentsSection() {
     del.type = 'button';
     del.className = 'doc-delete';
     del.textContent = 'Borrar';
+    del.setAttribute('aria-label', `Borrar ${doc.name}`);
     del.addEventListener('click', async () => {
       if (!confirm(`¿Borrar «${doc.name}» de este dispositivo?`)) return;
-      await store.deleteDocument(doc.id);
-      say('');
-      await refresh();
+      try {
+        await store.deleteDocument(doc.id);
+        say('');
+      } catch {
+        say('[documentos] No se pudo borrar el documento.', true);
+      }
+      await refresh().catch(() => {});
     });
     li.append(name, meta, use, del);
     return li;
@@ -94,9 +100,11 @@ export function documentsSection() {
       await store.putDocument(makeRecord(file, extracted, { id: crypto.randomUUID() }));
       say('');
     } catch (e) {
-      say(e instanceof DocumentError ? e.message : '[documentos] No se pudo guardar el documento.', true);
+      say(e instanceof DocumentError ? e.message
+        : e?.name === 'QuotaExceededError' ? '[documentos] No queda espacio en este dispositivo.'
+          : '[documentos] No se pudo guardar el documento.', true);
     }
-    await refresh();
+    await refresh().catch(() => {});
   });
 
   box.append(privacy, list, add, input, status);
