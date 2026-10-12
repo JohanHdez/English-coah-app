@@ -64,7 +64,7 @@ What each provider receives:
 | Job | Goes to | What it receives |
 |---|---|---|
 | Transcripción | The provider chosen for transcription (Groq, OpenAI, Gemini, or your local server) | Audio segments of the meeting, as WAV, with the language when known. |
-| Traducción y coach | The provider chosen for chat (any of the five) | Text only: the other speaker's sentences for translation (when the browser has no Translator of its own); for «Respuesta» and the report, the conversation so far plus «Tu perfil» and «Contexto de hoy»; for «Respuesta» only, up to 3000 characters of your enabled documents (see «Mis documentos»). |
+| Traducción y coach | The provider chosen for chat (any of the five) | Text only: the other speaker's sentences for translation (when the browser has no Translator of its own); for «Respuesta» and the report, the conversation so far plus «Tu perfil» and «Contexto de hoy»; for «Respuesta» only, up to 8000 characters of your enabled documents (see «Mis documentos»). |
 
 Claude has no audio input, so it is offered for chat only. Each key is sent only to its own
 provider's host. The voice print and the live line's text never leave the device.
@@ -106,11 +106,11 @@ extracted text, cut into passages, is kept in IndexedDB. There is no OCR: a scan
 documento no tiene texto (¿es un escaneo?)». Each document has «Usar en las reuniones» to switch it
 on or off and «Borrar» to remove it.
 
-**What is sent.** Each time you press «Respuesta» with any document switched on, up to **3000
+**What is sent.** Each time you press «Respuesta» with any document switched on, up to **8000
 characters** of your enabled documents go to the chat provider you chose, together with your profile
 and notes:
 
-- all of it, when the enabled documents total 3000 characters or less (a short CV goes whole, related
+- all of it, when the enabled documents total 8000 characters or less (a short CV goes whole, related
   to the question or not);
 - otherwise the passages that best match the other speaker's last turn and the two turns before it
   (BM25 over words, with a light English/Spanish stemmer), whole, until the cap;
@@ -120,7 +120,7 @@ Never for the closing report, the translation or the transcription; never the fi
 document off to stop sending it. The consent screen and «Mis documentos» say the same.
 
 **Limits.** 10 documents, 2 MB per file, 200 000 characters of text each, 100 pages per PDF, a 60 s
-deadline to read a PDF, 3000 characters per «Respuesta». Password-protected PDFs are refused. Of a
+deadline to read a PDF, 8000 characters per «Respuesta». Password-protected PDFs are refused. Of a
 DOCX only `word/document.xml` is read (no headers, footers, footnotes or comments).
 
 ## Privacy
@@ -129,7 +129,7 @@ DOCX only `word/document.xml` is read (no headers, footers, footnotes or comment
 |---|---|
 | Every provider's API key and your voice print (IndexedDB). The voice print is never sent anywhere. | Audio segments of the meeting go to the transcription provider you chose, using your own key, sent only to that provider's host (or your local server) — while the meeting runs, and for up to 35 s after «Terminar», so that what was already recorded still reaches the transcript; anything left after that is dropped and uploads still in flight are cancelled. The consent screen and «Ajustes» name who receives the audio and who the text. |
 | The last conversation's transcript, with its Spanish translations (IndexedDB), until you delete it in «Ajustes» («Borrar la conversación guardada», available once the meeting has ended) or start a new meeting. | |
-| «Mis documentos»: the extracted text of each document, as passages (IndexedDB) — never the file. It stays until you press «Borrar» on that document or clear the site's data; «Borrar mi huella de voz» and «Borrar la conversación guardada» leave it untouched. | With any document switched on, each «Respuesta» sends up to 3000 characters of the enabled documents to the chat provider you chose: whole when they total 3000 or less, otherwise the passages most related to the question (the opening passages if none is). Never for the report, the translation or the transcription. |
+| «Mis documentos»: the extracted text of each document, as passages (IndexedDB) — never the file. It stays until you press «Borrar» on that document or clear the site's data; «Borrar mi huella de voz» and «Borrar la conversación guardada» leave it untouched. | With any document switched on, each «Respuesta» sends up to 8000 characters of the enabled documents to the chat provider you chose: whole when they total 8000 or less, otherwise the passages most related to the question (the opening passages if none is). Never for the report, the translation or the transcription. |
 | Speaker embeddings: computed in the browser with the WeSpeaker model (WASM). | The first use downloads the speaker model (6.7 MB) from Hugging Face and the app's runtime (25 MB) from the app's own host; both are cached. |
 | Translation, when the browser has its own Translator (Chrome 138+). | Without it, translation falls back to the chat provider you chose, with the other speaker's text. |
 | The live line («Hablando ahora…») uses the browser's on-device recognition («Instalar reconocimiento de voz» downloads it once, on your tap). Without it, on a device with WebGPU, a local Whisper model (whisper-tiny.en, about 120 MB from Hugging Face the first time) shows it instead: on by default on a computer; on a phone or tablet it downloads nothing until you turn on «Texto en vivo con Whisper local» in «Ajustes» (and it can be turned off there on a computer). Neither is ever a cloud recogniser, and the live text is never stored or sent. Otherwise, or in a bilingual meeting, the screen says the live line is off. | Nothing else. The service worker caches the app shell and `vendor/` (pdf.js on first use), never audio, a document or provider responses. |

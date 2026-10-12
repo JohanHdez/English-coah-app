@@ -8,6 +8,7 @@
 // Usage: node e2e/run.mjs <learner> <other> [--condition=room|clean] [--delay=900] [--lang=en|multi] [--throttle=4]
 //                         [--transcribe=groq|openai|gemini] [--chat=groq|openai|gemini|anthropic]
 //                         [--live=speech|preview|none] [--preview-model=onnx-community/whisper-base.en] [--mobile]
+//                         [--script=long] [--translator=standin]   (node e2e/fixtures.mjs --long: the other side talks in paragraphs)
 //
 // --transcribe picks the provider whose request shape carries the audio (default
 // groq); every one is answered by the same stand-in. --chat turns translation on
@@ -51,6 +52,8 @@ const chat = opt('chat', null);
 const live = opt('live', null);
 const previewModel = opt('preview-model', null);
 const mobile = args.includes('--mobile');
+const script = opt('script', 'short');
+const translator = opt('translator', null);
 if (live && !['speech', 'preview', 'none'].includes(live)) {
   console.error('[e2e] --live takes speech|preview|none');
   process.exit(2);
@@ -64,10 +67,11 @@ const pad = (s, n) => String(s).padEnd(n);
 const fmt = (v, d = 1) => (v === null || v === undefined ? '-' : v.toFixed(d));
 const pct = (v) => (v === null ? '-' : `${(v * 100).toFixed(1)} %`);
 
-const run = await runConversation({ learner, other, condition, delayMs, lang, cpuThrottle, transcribe, chat, live, previewModel, mobile });
+const run = await runConversation({ learner, other, condition, delayMs, lang, cpuThrottle, transcribe, chat, live, previewModel, mobile, script, translator });
 const { perCue, totals } = score(run);
 const cost = embedCost(run);
 const liveLine = liveScore(run);
+const liveEs = liveScore(run, 'live-es');
 
 // Embedding cost per second of speech: the time each segment spent in labelling
 // (window scan + label embeds, serial in the worker) over the segment's own
@@ -115,6 +119,12 @@ const modes = run.events.filter((e) => e.type === 'live-mode');
 const at = (e) => (e ? `${((e.t - run.micT0) / 1000).toFixed(1)} s` : '-');
 console.log(`  live line                 ${modes.map((e) => `${e.kind}${e.device ? ` (${e.device})` : ''}${e.availability ? ` [${e.availability}]` : ''} at ${at(e)}`).join(' → ') || 'never set up'}`);
 console.log(`  live text after onset     ${liveLine.cuesWithLive}/${run.manifest.cues.length} cues · p50 ${fmt(liveLine.firstP50 === null ? null : liveLine.firstP50 / 1000, 2)} s · p90 ${fmt(liveLine.firstP90 === null ? null : liveLine.firstP90 / 1000, 2)} s · per cue ${liveLine.perCue.map((c) => (c.liveAfterOnsetMs === null ? '-' : (c.liveAfterOnsetMs / 1000).toFixed(1))).join(' ')}`);
+if (liveEs.painted) {
+  const lag = liveLine.perCue.map((c, i) => (c.liveAfterOnsetMs === null || liveEs.perCue[i].liveAfterOnsetMs === null ? null : liveEs.perCue[i].liveAfterOnsetMs - c.liveAfterOnsetMs)).filter((v) => v !== null).sort((a, b) => a - b);
+  const q = (p) => (lag.length ? lag[Math.min(lag.length - 1, Math.floor(p * lag.length))] / 1000 : null);
+  console.log(`  live Spanish after onset  ${liveEs.cuesWithLive}/${run.manifest.cues.length} cues · p50 ${fmt(liveEs.firstP50 === null ? null : liveEs.firstP50 / 1000, 2)} s · p90 ${fmt(liveEs.firstP90 === null ? null : liveEs.firstP90 / 1000, 2)} s · behind the English p50 ${fmt(q(0.5), 2)} s · p90 ${fmt(q(0.9), 2)} s`);
+  console.log(`  live Spanish coverage     mean ${pct(liveEs.meanCoverage)} of each cue's words · chat requests ${run.chats?.length ?? '-'}`);
+}
 console.log(`  live coverage             mean ${pct(liveLine.meanCoverage)} of each cue's words shown live (best pass during the cue)`);
 console.log(`  live blank > 2.5 s        ${liveLine.blank.length} stretches, ${fmt(liveLine.blankMs / 1000)} s in all${liveLine.blank.length ? ': ' + liveLine.blank.map((b) => `cue ${b.key + 1} ${(b.from / 1000).toFixed(1)}–${(b.to / 1000).toFixed(1)} s${b.open ? ' (to its end)' : ''}`).join(', ') : ''}`);
 const pv = (run.previews || []).map((p) => p.ms).sort((a, b) => a - b);

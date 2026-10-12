@@ -63,6 +63,30 @@ export const TURNS = [
   { speaker: 'me', lang: 'en', text: 'I will talk to the team and confirm by tomorrow morning.' },
 ];
 
+// The other side talks the way a real meeting does: paragraphs of sentences
+// with breaths shorter than the closing silence, so segments end at the length
+// cap rather than at a pause. `gap` overrides GAPS before the next turn.
+export const LONG_TURNS = [
+  { speaker: 'them', lang: 'en', gap: 0.25, text: 'Thanks everyone for joining today.' },
+  { speaker: 'them', lang: 'en', gap: 0.25, text: 'I want to walk you through the plan for the next quarter.' },
+  { speaker: 'them', lang: 'en', gap: 0.25, text: 'First, we are moving the payment service to the new cloud provider.' },
+  { speaker: 'them', lang: 'en', gap: 0.25, text: 'That migration should take about six weeks if nothing goes wrong.' },
+  { speaker: 'them', lang: 'en', gap: 0.25, text: 'Second, the mobile team will release the new onboarding flow in March.' },
+  { speaker: 'them', lang: 'en', gap: 0.8, text: 'We expect it to improve the sign up rate by at least ten percent.' },
+  { speaker: 'me', lang: 'en', gap: 0.8, text: 'That sounds good, who is leading the migration?' },
+  { speaker: 'them', lang: 'en', gap: 0.25, text: 'Good question, Carlos is leading it with two engineers from the platform team.' },
+  { speaker: 'them', lang: 'en', gap: 0.25, text: 'They already finished the first proof of concept last Friday.' },
+  { speaker: 'them', lang: 'en', gap: 0.25, text: 'The biggest risk is the database, because it holds five years of transactions.' },
+  { speaker: 'them', lang: 'en', gap: 0.25, text: 'We will copy it in small batches during the night to avoid downtime.' },
+  { speaker: 'them', lang: 'en', gap: 0.8, text: 'Can you tell me how your team would handle the testing for that?' },
+  { speaker: 'me', lang: 'en', gap: 0.8, text: 'We can write automated tests for every batch and compare the totals.' },
+  { speaker: 'them', lang: 'en', gap: 0.25, text: 'Perfect, that is exactly what we need.' },
+  { speaker: 'them', lang: 'en', gap: 0.25, text: 'Please send me a short proposal by Thursday with the time you need.' },
+  { speaker: 'them', lang: 'en', gap: 0.25, text: 'Include the people you want on the team and any tools you have to buy.' },
+  { speaker: 'them', lang: 'en', gap: 0.8, text: 'After that we will review it together with the finance department.' },
+  { speaker: 'me', lang: 'en', text: 'Sure, I will send it on Wednesday.' },
+];
+
 function hashKey(...parts) {
   return createHash('sha1').update(parts.join('|')).digest('hex').slice(0, 16);
 }
@@ -146,7 +170,9 @@ function buildEnroll(learner, condition) {
   return wav;
 }
 
-export function build({ learner, other, condition }) {
+export function build({ learner, other, condition, script = 'short' }) {
+  const turns = script === 'long' ? LONG_TURNS : TURNS;
+  const suffix = script === 'long' ? '-long' : '';
   mkdirSync(FIXTURES, { recursive: true });
   const enrollWav = buildEnroll(learner, condition);
 
@@ -154,7 +180,7 @@ export function build({ learner, other, condition }) {
   const cues = [];
   let at = START_SILENCE;
 
-  TURNS.forEach((turn, i) => {
+  turns.forEach((turn, i) => {
     const voice = turn.speaker === 'me' ? learner : other;
     const rate = RATES[i % RATES.length];
     let pcm = synth(voice, rate, turn.text);
@@ -167,8 +193,8 @@ export function build({ learner, other, condition }) {
     cues.push({ speaker: turn.speaker, voice, lang: turn.lang, text: turn.text, start: round(at), end: round(at + dur) });
     parts.push(pcm);
     at += dur;
-    if (i < TURNS.length - 1) {
-      const gap = GAPS[i % GAPS.length];
+    if (i < turns.length - 1) {
+      const gap = turn.gap ?? GAPS[i % GAPS.length];
       parts.push(new Int16Array(Math.round(gap * RATE)));
       at += gap;
     }
@@ -182,10 +208,10 @@ export function build({ learner, other, condition }) {
   let off = 0;
   for (const p of parts) { out.set(p, off); off += p.length; }
 
-  const wav = join(FIXTURES, `${SLUG[learner]}-${SLUG[other]}-${condition}.wav`);
+  const wav = join(FIXTURES, `${SLUG[learner]}-${SLUG[other]}-${condition}${suffix}.wav`);
   writeWav(wav, out);
   const manifest = { rate: RATE, duration: round(at), learner, other, condition, cues };
-  writeFileSync(join(FIXTURES, `${SLUG[learner]}-${SLUG[other]}-${condition}.json`), JSON.stringify(manifest, null, 2) + '\n');
+  writeFileSync(join(FIXTURES, `${SLUG[learner]}-${SLUG[other]}-${condition}${suffix}.json`), JSON.stringify(manifest, null, 2) + '\n');
 
   return { wav, enrollWav, manifest };
 }
@@ -203,7 +229,15 @@ export function buildAll() {
   return built;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv.includes('--long')) {
+  // node e2e/fixtures.mjs --long: the long-turn meeting for each learner, against Samantha.
+  for (const learner of LEARNERS) {
+    for (const condition of ['clean', 'room']) {
+      const { wav, manifest } = build({ learner, other: 'Samantha', condition, script: 'long' });
+      console.log(`${wav}  ${manifest.duration}s`);
+    }
+  }
+} else if (process.argv[1] === fileURLToPath(import.meta.url)) {
   for (const { wav, manifest } of buildAll()) {
     console.log(`${wav}  ${manifest.duration}s  (${manifest.learner} × ${manifest.other}, ${manifest.condition})`);
   }

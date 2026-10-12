@@ -104,13 +104,14 @@ files as-is over HTTPS (or `localhost`, a secure context) — nothing here is co
 | `ui/coach.js` `coachdata.js` + `coachdata.test.js` | The coach panel above the conversation («Frases» / «Notas» / «Contexto», and «Respuesta» taking the same panel) and its pure settings writes; profile and context fields shared with Ajustes | P2-5 |
 | `e2e/mock-groq.mjs` `e2e/run.mjs` `e2e/harness.mjs` `e2e/score.mjs` `e2e/smoke.mjs` | The whole app in Chrome with a fake mic and a stand-in for every provider's shapes, scored per cue; a UI smoke test | 6, 7, P2-3 |
 | `live-lane.js` + `live-lane.test.js` `preview-worker.js` | Which live line a meeting gets (on-device Web Speech, the install button, the local Whisper preview lane on WebGPU, or a note saying why none) and the preview lane's stitching and slowness rule; the Whisper worker | P2-7 |
+| `live-translate.js` + `live-translate.test.js` | The Spanish under the live line: finished sentences once and the one being spoken again, one request at a time, 300 ms apart through the on-device Translator, the whole line every 4 s through a chat provider (`liveTranslation()` in `translate.js`). Measured 2026-10-12 on `--script=long`: 0.06 s behind the English at p50 with the Translator stand-in, 0.78 s through the chat stand-in | 2026-10-12 |
 | `lib/markdown.js` + `lib/markdown.test.js` `ui/report.js` | The closing report: a tiny safe markdown renderer (nodes only, never `innerHTML`) and the report block under «Terminar» | P2-6 |
 | `docs-extract.js` + test | Text out of a file on the device: PDF through pdf.js (100-page cap, 60 s deadline), DOCX by reading `word/document.xml` out of the zip (`MAX_XML_BYTES` 8 MB inflate cap, encrypted entries refused), TXT/MD as UTF-8; `LIMITS`; `[documentos]` errors; linear parsing, no regex over unbounded whitespace | P3-2 |
 | `docs-record.js` + test | The stored record (never the bytes), the 10-document room check, `DOCUMENTS_SENT` (the privacy sentence) | P3-2, P3-3 |
 | `lib/passages.js` + test | Pure: split into ~700-character passages (100 overlap), tokenise and stem English/Spanish, BM25 | P3-2, P3-4 |
 | `ui/documents.js` | «Mis documentos» in «Ajustes»: add, switch, delete | P3-3 |
 | `store.js` | Also the `documents` object store (DB_VERSION 2, keyPath `id`); `onblocked` → «[almacenamiento] Cierra las otras pestañas…», `onversionchange` closes, `tx.onabort` and QuotaExceededError settle every write | P3-3 |
-| `lib/coach.js` documents | `documentsQuery`, `documentsBlock` (whole if ≤ 3000, else BM25 picks, else opening passages; index memo), `neutralise`, `DOCUMENTS_MAX_CHARS` | P3-4 |
+| `lib/coach.js` documents | `documentsQuery`, `documentsBlock` (whole if ≤ 8000, else BM25 picks, else opening passages; index memo), `neutralise`, `DOCUMENTS_MAX_CHARS` | P3-4 |
 | `vendor/pdfjs/` | `pdfjs-dist` 6.4.299, three files, sha256 in `docs/ORIGIN.md`; never edited | P3-2 |
 | `e2e/docs-fixtures.mjs` `e2e/docs-check.mjs` `e2e/docs-reply.mjs` | Synthetic CV (PDF/DOCX/TXT) and broken files; pdf.js in Chrome under the served CSP; «Respuesta» hit rate and search time in Node; the smoke also attaches, toggles and deletes a document and checks the CV reaches the prompt | P3-2, P3-4 |
 | `README.md` `CLAUDE.md` `docs/ORIGIN.md` `docs/BACKLOG.md` | Documentation; the backlog holds requests not yet in a plan | 1, P2-8 |
@@ -305,14 +306,14 @@ pipeline's labels and timing, never Whisper's accuracy.
   3432 passages) the first «Respuesta» after a change builds the index, median 121–137 ms (two runs), later
   ones 2.1–2.5 ms (Node, this Mac; a phone is slower and this runs on the page's thread). PDF, 2
   pages: 158–427 ms cold (1073 ms fresh profile), 70 ms warm. Limits: 10 documents, 2 MB, 200 000
-  characters, 100 PDF pages, 60 s per PDF, 3000 characters per «Respuesta». `MIXED_SILENCE_MS` is
+  characters, 100 PDF pages, 60 s per PDF, 8000 characters per «Respuesta». `MIXED_SILENCE_MS` is
   450 ms against the extension's 700 ms.
 - Retrieval is lexical (BM25 over stemmed words): «Where did you study?» misses a CV's «Education»
   in a long corpus (4/5).
 - Stemmer quirks (`lib/passages.js`): news→new, speed→spe, sesión/sesiones and lideré/liderar do
   not meet; "payments"→"pay".
-- Passages overlap by up to 100 characters, so the repeated text counts against the 3000, and a
-  document of ~2700–3000 characters can miss the "send whole" rule.
+- Passages overlap by up to 100 characters, so the repeated text counts against the 8000, and a
+  document of ~7500–8000 characters can miss the "send whole" rule.
 - Hidden PDF text (white, off-page) is extracted and can reach the reply prompt verbatim. Containment:
   plain-text reply, no link sink, CSP images `'self' data:`, the report excluded — worst case a
   steered suggestion.

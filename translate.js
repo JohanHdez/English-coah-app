@@ -63,3 +63,12 @@ export async function toSpanish(text, settings = {}) {
   }
   return chatTranslate(text, migrateSettings(settings));
 }
+
+// How the live line's Spanish is fetched: the on-device Translator answers in
+// tens of milliseconds and costs nothing, so every finished sentence and the one
+// being spoken go to it often; a chat provider counts each call against the
+// learner's per-minute limits, so only the line as a whole goes, every 4 s.
+export async function liveTranslation(settings = {}) {
+  if (await ensureTranslator()) return { translate: (text) => toSpanish(text, settings), sentences: true, gapMs: 300 };
+  return { translate: (text) => chatTranslate(text, migrateSettings(settings)), sentences: false, gapMs: 4000 };
+}

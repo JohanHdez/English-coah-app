@@ -157,8 +157,8 @@ export function blankSpans(points, manifest, { grace = 2500 } = {}) {
 // after each cue's onset that is not the previous cue's line still standing, the
 // best coverage of the cue's words while it was spoken (+1.5 s), and the blank
 // stretches. One line serves both voices, so every cue is judged.
-export function liveScore({ manifest, micT0, events }) {
-  const points = events.filter((e) => e.type === 'live').map((e) => ({ t: e.t - micT0, text: (e.text || '').trim() }));
+export function liveScore({ manifest, micT0, events }, type = 'live') {
+  const points = events.filter((e) => e.type === type).map((e) => ({ t: e.t - micT0, text: (e.text || '').trim() }));
   const perCue = manifest.cues.map((cue, idx) => {
     const start = cue.start * 1000;
     const end = cue.end * 1000 + 1500;

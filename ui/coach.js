@@ -291,7 +291,7 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy, onLayout
         en.textContent = plainReply(item.en);
       }
       b.append(en);
-      if (item.es) b.append(el('i', '', item.es));
+      if (item.es) b.append(el('i', '', plainReply(item.es)));
       box.append(b);
     }
     return box;

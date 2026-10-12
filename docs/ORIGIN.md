@@ -118,10 +118,10 @@ Kept as copied: every prompt, `parseReply`, `parseJsonLoose`, `runsOf`, `turnsTo
   schema; `parseJsonLoose` recovers the JSON. The extension's `strict: true` and `temperature: 0.3`
   are not sent (`buildChat` sends neither).
 - `askReply` takes an optional `documents` (the records of «Mis documentos»); `documentsQuery`/`documentsBlock`
-  add the best passages (BM25, `lib/passages.js`) up to `DOCUMENTS_MAX_CHARS` = 3000 after the profile and the
+  add the best passages (BM25, `lib/passages.js`) up to `DOCUMENTS_MAX_CHARS` = 8000 (3000 until 2026-10-12) after the profile and the
   context, and nothing when none is enabled or none scores. `askReport` does not use them (Phase 3, Task 4). Document text is neutralised (`neutralise`): any line
   naming the block's delimiters loses its dashes, and the header says the content is data, never instructions.
-  Phase 3 rules, all PWA-only (the extension has no documents): enabled passages totalling ≤ 3000
+  Phase 3 rules, all PWA-only (the extension has no documents): enabled passages totalling ≤ 8000
   characters are sent whole with no search; otherwise the best BM25 matches, whole, until the cap; when
   nothing scores, the first passage of each enabled document. `neutralise` runs on the picked passages
   only, after selection. The BM25 index is kept in a one-entry memo keyed by the enabled documents'

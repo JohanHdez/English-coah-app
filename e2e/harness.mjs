@@ -214,6 +214,14 @@ function harnessSettings({ transcribe, chat, lang, mockUrl, live }) {
 // of an on-device model the headless profile would try to download.
 const NO_TRANSLATOR = 'delete window.Translator;';
 
+// --translator=standin: an on-device Translator that tags text `[es]` after
+// 40 ms + 8 ms per character (the extension's stand-in): the real one cannot be
+// created in a throwaway profile. It measures when Spanish appears, never what it says.
+const STANDIN_TRANSLATOR = `window.Translator = {
+  availability: async () => 'available',
+  create: async () => ({ translate: (t) => new Promise((r) => setTimeout(() => r('[es] ' + t), 40 + 8 * t.length)) }),
+};`;
+
 // --live=preview and --live=none measure a browser without on-device recognition.
 const NO_SPEECH = 'delete window.SpeechRecognition; delete window.webkitSpeechRecognition;';
 
@@ -240,8 +248,8 @@ async function prepareLive(chrome, session, lang) {
 // `live`: null leaves the profile as it is; 'speech' installs the on-device pack
 // first; 'preview' hides Web Speech and turns the local Whisper lane on; 'none'
 // hides Web Speech with the lane off — the baseline the lane is compared against.
-export async function runConversation({ learner, other, condition = 'room', delayMs = 900, lang = 'en', cpuThrottle = 0, transcribe = 'groq', chat = null, live = null, previewModel = null, mobile = false, log = console.log }) {
-  const name = `${slug(learner)}-${slug(other)}-${condition}`;
+export async function runConversation({ learner, other, condition = 'room', delayMs = 900, lang = 'en', cpuThrottle = 0, transcribe = 'groq', chat = null, live = null, previewModel = null, mobile = false, script = 'short', translator = null, log = console.log }) {
+  const name = `${slug(learner)}-${slug(other)}-${condition}${script === 'long' ? '-long' : ''}`;
   const enrollWav = join(FIXTURES, `enroll-${slug(learner)}-${condition}.wav`);
   const convoWav = join(FIXTURES, `${name}.wav`);
   const manifestPath = join(FIXTURES, `${name}.json`);
@@ -284,7 +292,7 @@ export async function runConversation({ learner, other, condition = 'room', dela
       const slow = cpuThrottle ? `;addEventListener('DOMContentLoaded', () => { if (window.__ec) window.__ec.cpuSlowdown = ${cpuThrottle}; });` : '';
       const model = previewModel ? `;addEventListener('DOMContentLoaded', () => { if (window.__ec) window.__ec.previewModel = ${JSON.stringify(previewModel)}; });` : '';
       const hide = live === 'preview' || live === 'none' ? NO_SPEECH : '';
-      const page = await openPage(chrome, base, { initScript: MIC_CLOCK + slow + model + hide + (mobile ? MOBILE : '') + (chat ? NO_TRANSLATOR : ''), cpuThrottle });
+      const page = await openPage(chrome, base, { initScript: MIC_CLOCK + slow + model + hide + (mobile ? MOBILE : '') + (translator === 'standin' ? STANDIN_TRANSLATOR : chat ? NO_TRANSLATOR : ''), cpuThrottle });
       const { session } = page;
       if (cpuThrottle) log(`meeting: CPU throttled ${cpuThrottle}×`);
       if (live === 'speech') {

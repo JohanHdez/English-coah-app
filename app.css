@@ -367,6 +367,11 @@ button.primary {
   flex-shrink: 0;
 }
 
+.live-es {
+  font-style: italic;
+  color: #8ab4f8;
+}
+
 .live-label {
   font-style: italic;
 }

@@ -12,7 +12,8 @@ import { createSession } from '../session.js';
 import { createSpeakers } from '../speaker.js';
 import { startCapture, createAudioContext } from '../capture.js';
 import { transcribe } from '../transcribe.js';
-import { toSpanish } from '../translate.js';
+import { toSpanish, liveTranslation } from '../translate.js';
+import { createLiveTranslator } from '../live-translate.js';
 import { liveAvailability, installLive, startLive } from '../lib/live.js';
 import { liveMode, createPreviewLane, NOTES, isMobile, deviceFacts, previewEnabled } from '../live-lane.js';
 import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, withTranslations, mayInstallCapture, STALL_CHECK_MS } from '../bubbles.js';
@@ -111,6 +112,15 @@ export function renderMeeting(root, { settings, onEvent }) {
   liveTextEl.className = 'live-text';
   liveLineEl.append(liveLabel, liveTextEl);
   section.append(liveLineEl);
+
+  const liveEsEl = document.createElement('div');
+  liveEsEl.className = 'live-line live-es';
+  liveEsEl.hidden = true;
+  liveEsEl.lang = 'es';
+  const liveEsText = document.createElement('span');
+  liveEsText.className = 'live-text';
+  liveEsEl.append(liveEsText);
+  section.append(liveEsEl);
 
   const liveNoteEl = document.createElement('p');
   liveNoteEl.className = 'live-note';
@@ -349,6 +359,34 @@ export function renderMeeting(root, { settings, onEvent }) {
     liveTextEl.textContent = text;
     liveLineEl.hidden = !liveAvailable || !text;
     onEvent?.({ type: 'live', text: liveLineEl.hidden ? '' : text });
+    followLive(liveLineEl.hidden ? '' : text);
+  }
+
+  // The Spanish under the live line: provisional like the line itself, never
+  // stored; the bubble brings the translation that stays.
+  let liveTr = null;
+  let liveTrReady = null;
+  let liveTrText = '';
+
+  function setLiveEs(text) {
+    liveEsText.textContent = text;
+    liveEsEl.hidden = !text;
+    onEvent?.({ type: 'live-es', text });
+  }
+
+  function followLive(text) {
+    liveTrText = text;
+    if (!text || settings.translate === false || liveLangFor(settings.lang) !== 'en-US') {
+      liveTr?.clear();
+      setLiveEs('');
+      return;
+    }
+    if (liveTr) { liveTr.update(text); return; }
+    liveTrReady ??= liveTranslation(settings).then(({ translate, sentences, gapMs }) => {
+      if (destroyed) return;
+      liveTr = createLiveTranslator({ translate, sentences, gapMs, onText: setLiveEs });
+      if (liveTrText) liveTr.update(liveTrText);
+    }).catch(() => {});
   }
 
   function setLiveNote(text, { install = false } = {}) {
