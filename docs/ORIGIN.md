@@ -171,3 +171,15 @@ the registry's `dist.integrity`,
 Nothing else from the package is copied: no source maps, no `cmaps/`, `standard_fonts/`, `wasm/`
 or `iccs/` (text extraction does not need them), no viewer. Replace the three files together
 from a newer tarball, re-check its integrity, and update this table.
+
+## `lib/coach.js`: the reply prompt (2026-10-12)
+
+PWA-only, after a real meeting where «Respuesta» was curt and claimed a prototype the learner
+did not have. `REPLY_SYSTEM`'s "answer" asks for 2–4 plain B2 sentences (30–60 words, full forms
+over contractions, common words, the direct answer first and one or two specific details), answers
+the most recent turn even when it is a clarification, and forbids presenting anything as done or
+measured, or guessing any number, unless the background or the learner's own turns state it.
+`DEFAULT_COACH.level` is `B2` (was `B1-B2`). `JSON_BUDGET` is 2000 (was 1200), and Groq's gpt-oss
+models get `reasoning_effort: 'low'` (`providers.js`): measured on real Groq over 12 calls,
+0 truncations and 0.9–2.2 s (one 11 s, a rate-limit wait), against 4 truncated of 9 at 1200 with
+the default effort and 2.4–19 s at `medium`.

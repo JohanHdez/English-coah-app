@@ -307,6 +307,9 @@ export function buildChat(id, { system, user, model, maxTokens, schema, base, st
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
   };
   if (maxTokens) body[id === 'local' ? 'max_tokens' : 'max_completion_tokens'] = maxTokens;
+  // gpt-oss reasons before it answers, from the same token ceiling; at its default
+  // (medium) a longer «Respuesta» was truncated into a 400 in 4 of 9 real calls.
+  if (id === 'groq' && /^openai\/gpt-oss/.test(model)) body.reasoning_effort = 'low';
   if (schema) {
     const json_schema = { name: 'reply', schema };
     // Strict is constrained decoding, the one mode that cannot return invalid JSON; a local server may not know it.

@@ -245,6 +245,14 @@ test('OpenAI-compatible chat (Groq, OpenAI, local)', () => {
   }
 });
 
+test('Groq gpt-oss reasons at low effort; other models and providers are left alone', () => {
+  const effort = (id, model) => JSON.parse(buildChat(id, { system: 's', user: 'u', model, base: id === 'local' ? 'http://127.0.0.1:11434' : undefined }).init.body).reasoning_effort;
+  assert.equal(effort('groq', 'openai/gpt-oss-120b'), 'low');
+  assert.equal(effort('groq', 'llama-3.3-70b-versatile'), undefined);
+  assert.equal(effort('openai', 'openai/gpt-oss-120b'), undefined);
+  assert.equal(effort('local', 'openai/gpt-oss-120b'), undefined);
+});
+
 test('Anthropic chat: /v1/messages, the version and browser-access headers, no temperature', () => {
   const schema = { type: 'object', properties: { a: { type: 'string' } } };
   const { url, init } = buildChat('anthropic', { system: 'Be brief.', user: 'Hello', model: 'claude-haiku-5-5', maxTokens: 200, schema });
