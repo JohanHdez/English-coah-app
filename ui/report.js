@@ -14,7 +14,7 @@ function el(tag, className, text) {
   return node;
 }
 
-export function createReportPanel({ settings, getTurns, onToast, onReport = () => {}, onBusy = () => {} }) {
+export function createReportPanel({ settings, getTurns, getDocuments = async () => [], onToast, onReport = () => {}, onBusy = () => {} }) {
   const root = el('section', 'report');
   root.hidden = true;
   const head = el('div', 'report-head');
@@ -54,7 +54,9 @@ export function createReportPanel({ settings, getTurns, onToast, onReport = () =
     onBusy(true);
     paint({ pending: true });
     try {
-      const text = await askReport({ turns: getTurns(), settings, signal: mine.signal });
+      const documents = await getDocuments().catch(() => []);
+      const documentNames = documents.filter((d) => d.enabled !== false).map((d) => d.name);
+      const text = await askReport({ turns: getTurns(), settings, signal: mine.signal, documentNames });
       if (!mine.signal.aborted && !destroyed && asked === epoch) {
         markdown = text;
         paint({ text });

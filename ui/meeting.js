@@ -209,6 +209,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   const coach = createCoachPanel({
     settings,
     getTurns: () => [...restored, ...(session ? session.transcript() : [])],
+    getLive: () => (liveLineEl.hidden ? '' : liveTextEl.textContent),
     onToast: flashToast,
     onLayout: () => { if (atBottom) stickToBottom(); },
     onBusy: (busy) => { replyBtn.disabled = busy; replyBtn.classList.toggle('busy', busy); },
@@ -220,6 +221,7 @@ export function renderMeeting(root, { settings, onEvent }) {
   const report = createReportPanel({
     settings,
     getTurns: () => [...restored, ...(session ? session.transcript() : [])],
+    getDocuments: () => store.listDocuments(),
     onToast: flashToast,
     onBusy: (busy) => { reportBtn.disabled = busy; reportBtn.classList.toggle('busy', busy); },
     onReport: (text) => { reportMd = text; persistTranscript(); },

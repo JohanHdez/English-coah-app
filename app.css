@@ -367,6 +367,12 @@ button.primary {
   flex-shrink: 0;
 }
 
+.reply-to {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+}
+
 .live-es {
   font-style: italic;
   color: #8ab4f8;

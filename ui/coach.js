@@ -96,7 +96,7 @@ export function profileFields(settings, onError = () => {}) {
   return box;
 }
 
-export function createCoachPanel({ settings, getTurns, onToast, onBusy, onLayout = () => {} }) {
+export function createCoachPanel({ settings, getTurns, getLive = () => '', onToast, onBusy, onLayout = () => {} }) {
   const root = el('div', 'coach-panel');
 
   const tabs = el('div', 'coach-tabs');
@@ -297,7 +297,7 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy, onLayout
     return box;
   }
 
-  function showReply({ pending = false, error = '', answer = [], ideas = [] }) {
+  function showReply({ pending = false, error = '', answer = [], ideas = [], replyingTo = '' }) {
     tabs.hidden = true;
     body.hidden = true;
     reply.hidden = false;
@@ -317,6 +317,8 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy, onLayout
       p.setAttribute('role', 'alert');
       reply.append(p);
     } else {
+      // Shows which question was answered, so a reply to the previous one is caught at a glance.
+      if (replyingTo) reply.append(el('p', 'reply-to', `Responde a: «${replyingTo}»`));
       if (answer.length) reply.append(group('Di esto', answer, true));
       if (ideas.length) reply.append(group('Para estudiar', ideas, false));
     }
@@ -348,7 +350,7 @@ export function createCoachPanel({ settings, getTurns, onToast, onBusy, onLayout
         onToast('[documentos] No se pudieron leer tus documentos; la respuesta va sin ellos.');
         return [];
       });
-      const result = await askReply({ turns, settings, signal: mine.signal, documents });
+      const result = await askReply({ turns, settings, signal: mine.signal, documents, live: getLive() });
       if (!mine.signal.aborted && !destroyed && asked === epoch) showReply(result);
     } catch (err) {
       if (!mine.signal.aborted && !destroyed && asked === epoch) showReply({ error: err?.message || String(err) });
