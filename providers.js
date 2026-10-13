@@ -49,6 +49,14 @@ export const PROVIDERS = [
     // https://platform.claude.com/docs/en/about-claude/model-deprecations:
     // claude-haiku-4-5-20251001 may retire from 2026-10-15; claude-haiku-5-5 not before 2027-10-07.
     models: { chat: 'claude-haiku-5-5' },
+    // Offered in Ajustes with what each is good for; any other id still goes in «Otro modelo».
+    choices: {
+      chat: [
+        { id: 'claude-haiku-5-5', label: 'Haiku 5.5 — el más rápido y barato; bien para conversación y traducción' },
+        { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5 — equilibrio entre rapidez y precisión; el recomendado para entrevistas técnicas' },
+        { id: 'claude-opus-5-5', label: 'Opus 5.5 — el más preciso en preguntas técnicas difíciles; más lento y caro' },
+      ],
+    },
   },
   {
     id: 'local',

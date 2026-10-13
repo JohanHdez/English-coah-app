@@ -565,3 +565,11 @@ test('a blocked or empty Gemini chat response is a staged Spanish error', () => 
   assert.throws(() => parseChat('gemini', { candidates: [{ content: { parts: [] }, finishReason: 'STOP' }] }, '[traducción]'), /^Error: \[traducción\] Gemini no devolvió texto\./);
   assert.equal(parseChat('gemini', { candidates: [{ content: { parts: [{ text: 'cut' }] }, finishReason: 'MAX_TOKENS' }] }, stage), 'cut');
 });
+
+test('Claude offers its models in Ajustes, the default among them', () => {
+  const p = PROVIDERS.find((x) => x.id === 'anthropic');
+  const ids = p.choices.chat.map((c) => c.id);
+  assert.deepEqual(ids, ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5']);
+  assert.ok(ids.includes(p.models.chat));
+  for (const c of p.choices.chat) assert.match(c.label, / — /);
+});

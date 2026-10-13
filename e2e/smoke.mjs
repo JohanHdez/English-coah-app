@@ -115,6 +115,29 @@ async function main() {
       input.value = ${JSON.stringify(FAKE_KEY)};
       input.dispatchEvent(new Event('input', { bubbles: true }));
     `);
+    // Claude for the coach: its block offers the three models with what each is for,
+    // and picking Sonnet stores it; then back to Groq for the rest of the run.
+    // Before groqBase is seeded: every pick saves the screen's own settings object.
+    const claude = await chrome.evaluate(session, `(async () => {
+      const text = [...document.querySelectorAll('.settings select')][1];
+      text.value = 'anthropic';
+      text.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 100));
+      const block = [...document.querySelectorAll('.settings fieldset.provider')].find((f) => f.querySelector('legend')?.textContent === 'Anthropic Claude');
+      const model = block?.querySelector('select');
+      if (!model) return { error: 'no model picker in the Claude block' };
+      const options = [...model.options].map((o) => o.textContent);
+      model.value = 'claude-sonnet-5-5';
+      model.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 300));
+      const stored = await import('./store.js').then((m) => m.get('settings'));
+      text.value = 'groq';
+      text.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 300));
+      return { options, chosen: stored?.models?.anthropic?.chat, selected: model.selectedOptions[0]?.textContent };
+    })()`);
+    if (claude.error || claude.options.length !== 4 || claude.chosen !== 'claude-sonnet-5-5' || !/por defecto/.test(claude.options[0])) throw new Error(`[smoke] the Claude model picker is wrong: ${JSON.stringify(claude)}`);
+    console.log(`settings: Claude offers ${claude.options.length - 1} models + «Otro modelo»; Sonnet was stored`);
     // groqBase has no UI field by design (the controller ruling: "not shown in
     // the UI"), so it is seeded directly in storage, the same way Task 7's own
     // harness is expected to.

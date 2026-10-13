@@ -137,7 +137,37 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
         patchNested('models', p.id, { ...settings.models?.[p.id], [job]: modelInput.value.trim() });
         updateContinue();
       });
-      block.append(field(job === 'transcribe' ? 'Modelo de transcripción' : 'Modelo de traducción y coach', modelInput));
+      const label = job === 'transcribe' ? 'Modelo de transcripción' : 'Modelo de traducción y coach';
+      const choices = p.choices?.[job];
+      if (!choices) {
+        block.append(field(label, modelInput));
+        continue;
+      }
+      // '' is the provider's default, as in the free-text field; «Otro modelo» shows it.
+      const select = document.createElement('select');
+      for (const c of choices) {
+        const option = document.createElement('option');
+        option.value = c.id;
+        option.textContent = c.label + (c.id === p.models[job] ? ' (por defecto)' : '');
+        select.append(option);
+      }
+      const other = document.createElement('option');
+      other.value = 'other';
+      other.textContent = 'Otro modelo…';
+      select.append(other);
+      const current = modelInput.value || p.models[job];
+      const known = choices.some((c) => c.id === current);
+      select.value = known ? current : 'other';
+      const otherField = field('Identificador del modelo', modelInput);
+      otherField.hidden = known;
+      select.addEventListener('change', () => {
+        otherField.hidden = select.value !== 'other';
+        if (select.value === 'other') { modelInput.focus(); return; }
+        modelInput.value = select.value === p.models[job] ? '' : select.value;
+        patchNested('models', p.id, { ...settings.models?.[p.id], [job]: modelInput.value });
+        updateContinue();
+      });
+      block.append(field(label, select), otherField);
     }
     return block;
   }
