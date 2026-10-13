@@ -280,7 +280,9 @@ export function renderMeeting(root, { settings, onEvent }) {
     text.textContent = entry.text;
     div.append(meta, text);
 
-    if (entry.speaker !== 'me' && entry.lang !== 'es' && settings.translate !== false) {
+    // The learner's own English is translated too (unless turned off): reading it back
+    // in Spanish shows a slip like "word" for "work" that sounds right while speaking.
+    if ((entry.speaker !== 'me' || settings.translateMine !== false) && entry.lang !== 'es' && settings.translate !== false) {
       const es = document.createElement('span');
       es.className = 'es';
       div.append(es);

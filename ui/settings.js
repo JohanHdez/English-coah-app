@@ -225,6 +225,15 @@ export function renderSettings(root, { settings, forced, onBack, onReenroll, end
   translateLabel.append(translateInput, document.createTextNode('Traducir al español'));
   section.append(translateLabel);
 
+  const mineInput = document.createElement('input');
+  mineInput.type = 'checkbox';
+  mineInput.checked = settings.translateMine !== false;
+  mineInput.addEventListener('change', () => patch({ translateMine: mineInput.checked }));
+  const mineLabel = document.createElement('label');
+  mineLabel.className = 'checkbox';
+  mineLabel.append(mineInput, document.createTextNode('Traducir también lo que digo yo (para ver si dije lo que quería)'));
+  section.append(mineLabel);
+
   const previewInput = document.createElement('input');
   previewInput.type = 'checkbox';
   previewInput.checked = previewEnabled(settings.livePreview, isMobile(deviceFacts(globalThis)));

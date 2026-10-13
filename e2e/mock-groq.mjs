@@ -188,6 +188,26 @@ export async function startMockGroq({ manifest, delayMs = 900, wav = null }) {
             : (json.messages || []).filter((m) => m.role === 'user').map((m) => m.content).join('\n');
           chats.push({ n: chats.length + 1, at: Date.now(), provider: shape.provider, auth: shape.auth, model: json.model ?? req.url.split('/').pop().split(':')[0], chars: user.length, user });
           await sleep(chatDelay ?? Math.round(delayMs / 3));
+          if (shape.provider === 'anthropic' && json.stream) {
+            // Claude's server-sent events, the text in four deltas 40 ms apart, so a
+            // run sees the reply painted before it is complete.
+            chats.at(-1).stream = true;
+            chats.at(-1).effort = json.output_config?.effort ?? null;
+            const text = chatReply('anthropic', user).content[0].text;
+            res.writeHead(200, { ...CORS, 'Content-Type': 'text/event-stream' });
+            const send = (event) => res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+            send({ type: 'message_start', message: { id: 'msg_mock', content: [] } });
+            send({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+            const step = Math.ceil(text.length / 4);
+            for (let i = 0; i < text.length; i += step) {
+              send({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: text.slice(i, i + step) } });
+              await sleep(40);
+            }
+            send({ type: 'content_block_stop', index: 0 });
+            send({ type: 'message_stop' });
+            res.end();
+            return;
+          }
           res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' });
           res.end(JSON.stringify(chatReply(shape.provider, user)));
           return;

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  PROVIDERS, providerById, isLocalBase, defaultSettings, migrateSettings, isConfigured, routing,
+  PROVIDERS, providerById, isLocalBase, readAnthropicStream, defaultSettings, migrateSettings, isConfigured, routing,
   buildTranscribe, parseTranscribe, buildChat, parseChat, callTranscribe, callChat, redact,
 } from './providers.js';
 
@@ -572,4 +572,29 @@ test('Claude offers its models in Ajustes, the default among them', () => {
   assert.deepEqual(ids, ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5']);
   assert.ok(ids.includes(p.models.chat));
   for (const c of p.choices.chat) assert.match(c.label, / — /);
+});
+
+test('Claude: effort and stream go in the body only when asked', () => {
+  const body = (opts) => JSON.parse(buildChat('anthropic', { system: 's', user: 'u', model: 'claude-sonnet-5-5', maxTokens: 100, ...opts }).init.body);
+  const plain = body({});
+  assert.equal(plain.stream, undefined);
+  assert.equal(plain.output_config, undefined);
+  const live = body({ effort: 'low', stream: true, schema: { type: 'object' } });
+  assert.equal(live.stream, true);
+  assert.deepEqual(live.output_config, { format: { type: 'json_schema', schema: { type: 'object' } }, effort: 'low' });
+});
+
+test('readAnthropicStream joins text deltas, skips thinking, and fails on an error event', async () => {
+  const sse = (events) => ({ body: new Response(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('')).body });
+  const seen = [];
+  const text = await readAnthropicStream(sse([
+    { type: 'message_start', message: {} },
+    { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'hmm' } },
+    { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Hel' } },
+    { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'lo' } },
+    { type: 'message_stop' },
+  ]), (t) => seen.push(t));
+  assert.equal(text, 'Hello');
+  assert.deepEqual(seen, ['Hel', 'Hello']);
+  await assert.rejects(readAnthropicStream(sse([{ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }]), () => {}), /\[coach\].*Overloaded/);
 });

@@ -262,7 +262,7 @@ export function parseTranscribe(id, json) {
 
 const DEFAULT_MAX_TOKENS = 1024;
 
-export function buildChat(id, { system, user, model, maxTokens, schema, base, stage = '[coach]' }) {
+export function buildChat(id, { system, user, model, maxTokens, schema, base, stage = '[coach]', effort, stream = false }) {
   const p = providerById(id);
   if (!p || !p.jobs.includes('chat')) throw new Error(`${stage} Proveedor desconocido: ${id}.`);
   const json = { 'Content-Type': 'application/json' };
@@ -280,6 +280,12 @@ export function buildChat(id, { system, user, model, maxTokens, schema, base, st
       messages: [{ role: 'user', content: user }],
     };
     if (schema) body.output_config = { format: { type: 'json_schema', schema } };
+    // https://platform.claude.com/docs/en/build-with-claude/effort: output_config.effort
+    // (low…max) on every current model; Sonnet 5.5 defaults to high, which a reply read
+    // aloud while the other person waits cannot afford.
+    if (effort) body.output_config = { ...body.output_config, effort };
+    // https://platform.claude.com/docs/en/build-with-claude/streaming: server-sent events.
+    if (stream) body.stream = true;
     return {
       url: `${trimBase(base || p.base)}/v1/messages`,
       init: {
@@ -433,7 +439,7 @@ function statusMessage({ stage, label, status, body, keys, lost }) {
 
 // `signal` belongs to the caller: for transcription it fires when the meeting is
 // finished, and nothing may be uploaded or retried after that.
-async function send({ id, key, build, stage, signal, sleep = waitFor, retries = RETRIES, timeoutMs = TIMEOUT_MS, lost = false }) {
+async function send({ id, key, build, stage, signal, sleep = waitFor, retries = RETRIES, timeoutMs = TIMEOUT_MS, lost = false, onText = null }) {
   const { label } = providerById(id);
   const keys = [key];
   let res;
@@ -461,11 +467,45 @@ async function send({ id, key, build, stage, signal, sleep = waitFor, retries = 
     if (attempt >= retries) throw failure;
     await sleep(retryDelayMs(attempt, retryAfterMs), signal);
   }
+  if (onText) {
+    const text = await readAnthropicStream(res, onText, { stage, label, keys });
+    return { content: [{ type: 'text', text }] };
+  }
   try {
     return await res.json();
   } catch (err) {
     throw new Error(`${stage} Respuesta de ${label} inválida: ${redact(err?.message || String(err), keys)}`);
   }
+}
+
+// Anthropic's server-sent events: the text arrives as content_block_delta /
+// text_delta; thinking deltas are skipped; an `error` event mid-stream fails the call.
+export async function readAnthropicStream(res, onText, { stage = '[coach]', label = 'Anthropic Claude', keys = [] } = {}) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let text = '';
+  const handle = (line) => {
+    if (!line.startsWith('data:')) return;
+    let event;
+    try { event = JSON.parse(line.slice(5).trim()); } catch { return; }
+    if (event.type === 'error') {
+      throw new Error(`${stage} ${label} interrumpió la respuesta: ${redact(event.error?.message || 'error', keys)}`);
+    }
+    if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
+      text += event.delta.text;
+      onText(text);
+    }
+  };
+  for (;;) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split(/\r?\n/);
+    buffer = done ? '' : lines.pop();
+    for (const line of lines) handle(line);
+    if (done) break;
+  }
+  return text.trim();
 }
 
 function precheck(settings, id, job, stage) {
@@ -498,7 +538,10 @@ export async function callTranscribe(settings, samples, { signal, sleep } = {}) 
   return parseTranscribe(id, json);
 }
 
-export async function callChat(settings, { system, user, maxTokens, schema, signal, sleep, stage = '[coach]', retries, timeoutMs }) {
+// `onText` streams where the provider is Claude (the partial text so far, on every
+// delta); elsewhere it is ignored and the whole reply arrives at once. `effort` is
+// Claude's output_config.effort.
+export async function callChat(settings, { system, user, maxTokens, schema, signal, sleep, stage = '[coach]', retries, timeoutMs, effort, onText }) {
   const id = settings.chatProvider || DEFAULT_PROVIDER;
   precheck(settings, id, 'chat', stage);
   const model = modelFor(settings, id, 'chat');
@@ -506,12 +549,13 @@ export async function callChat(settings, { system, user, maxTokens, schema, sign
   const json = await send({
     id,
     key: settings.keys?.[id] || '',
-    build: () => buildChat(id, { system, user, model, maxTokens, schema, base, stage }),
+    build: () => buildChat(id, { system, user, model, maxTokens, schema, base, stage, effort: id === 'anthropic' ? effort : undefined, stream: id === 'anthropic' && !!onText }),
     stage,
     signal,
     sleep,
     retries,
     timeoutMs,
+    onText: id === 'anthropic' ? onText : null,
   });
   return parseChat(id, json, stage);
 }

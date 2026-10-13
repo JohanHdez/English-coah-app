@@ -297,7 +297,7 @@ export function createCoachPanel({ settings, getTurns, getLive = () => '', onToa
     return box;
   }
 
-  function showReply({ pending = false, error = '', answer = [], ideas = [], replyingTo = '' }) {
+  function showReply({ pending = false, error = '', answer = [], ideas = [], replyingTo = '', partial = null }) {
     tabs.hidden = true;
     body.hidden = true;
     reply.hidden = false;
@@ -308,7 +308,16 @@ export function createCoachPanel({ settings, getTurns, getLive = () => '', onToa
     close.setAttribute('aria-label', 'Cerrar la respuesta');
     head.append(close);
     reply.append(head);
-    if (pending) {
+    if (partial) {
+      // Painted as it streams; the full card (bold term, gloss, ideas) replaces it.
+      if (partial.replyingTo) reply.append(el('p', 'reply-to', `Responde a: «${partial.replyingTo}»`));
+      const box = el('div', 'reply-group');
+      box.append(el('span', 'reply-label', 'Di esto'));
+      const item = el('div', 'reply-item answer streaming');
+      item.append(el('span', 'reply-en', plainReply(partial.en) + ' …'));
+      box.append(item);
+      reply.append(box);
+    } else if (pending) {
       const p = el('p', 'reply-status', 'Pensando…');
       p.setAttribute('role', 'status');
       reply.append(p);
@@ -350,7 +359,10 @@ export function createCoachPanel({ settings, getTurns, getLive = () => '', onToa
         onToast('[documentos] No se pudieron leer tus documentos; la respuesta va sin ellos.');
         return [];
       });
-      const result = await askReply({ turns, settings, signal: mine.signal, documents, live: getLive() });
+      const onPartial = (partial) => {
+        if (!mine.signal.aborted && !destroyed && asked === epoch && partial.en) showReply({ partial });
+      };
+      const result = await askReply({ turns, settings, signal: mine.signal, documents, live: getLive(), onPartial });
       if (!mine.signal.aborted && !destroyed && asked === epoch) showReply(result);
     } catch (err) {
       if (!mine.signal.aborted && !destroyed && asked === epoch) showReply({ error: err?.message || String(err) });
