@@ -77,3 +77,27 @@ const SAVE_WHAT = { note: 'la nota', phrase: 'la frase', profile: 'tu perfil', c
 export function saveFailureText(kind) {
   return `[almacenamiento] No se pudo guardar ${SAVE_WHAT[kind] || 'el cambio'}.`;
 }
+
+// The conversation as Markdown for «Descargar conversación»: one block per bubble with
+// its clock time, who spoke, the English and, when there is one, its Spanish. `t` is
+// the bubble's capture time (Date.now() milliseconds).
+export function transcriptMarkdown(entries = [], when = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const clock = (t) => {
+    const d = new Date(t);
+    return Number.isFinite(d.getTime()) ? `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` : '';
+  };
+  const day = `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
+  const lines = [`# Conversación — ${day}`, ''];
+  for (const e of entries) {
+    const text = String(e?.text ?? '').trim();
+    if (!text) continue;
+    const who = e.speaker === 'me' ? 'Yo' : 'Interlocutor';
+    const time = clock(e.t);
+    lines.push(`**${time ? `[${time}] ` : ''}${who}:** ${text}`);
+    const es = String(e.es ?? '').trim();
+    if (es) lines.push(`> ${es}`);
+    lines.push('');
+  }
+  return lines.join('\n');
+}

@@ -746,3 +746,15 @@ textarea {
   border: 1px solid var(--danger);
   color: var(--danger);
 }
+
+.download-transcript {
+  align-self: flex-end;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 0.25rem 0;
+  text-decoration: underline;
+  cursor: pointer;
+  flex-shrink: 0;
+}

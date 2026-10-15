@@ -263,6 +263,23 @@ async function main() {
     });
     const beforeOverlay = await bubbleCount(chrome, session);
     console.log(`meeting: first bubble after ${((Date.now() - t2) / 1000).toFixed(1)} s (${beforeOverlay} bubble(s), mock has handled ${mock.requests.length} request(s))`);
+    // «Descargar conversación»: the Blob handed to the download link holds the bubbles.
+    const downloaded = await chrome.evaluate(session, `(async () => {
+      const made = [];
+      const original = URL.createObjectURL;
+      URL.createObjectURL = (blob) => { made.push(blob); return original.call(URL, blob); };
+      const clicks = [];
+      const originalClick = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function () { clicks.push(this.download); };
+      document.querySelector('.meeting .download-transcript').click();
+      URL.createObjectURL = original;
+      HTMLAnchorElement.prototype.click = originalClick;
+      return { name: clicks[0] || '', text: made[0] ? await made[0].text() : '' };
+    })()`);
+    if (!/^conversacion-.*\.md$/.test(downloaded.name) || !/^# Conversación/.test(downloaded.text) || !/\*\*\[\d\d:\d\d:\d\d\] (Yo|Interlocutor):\*\* \S/.test(downloaded.text)) {
+      throw new Error(`[smoke] «Descargar conversación» is wrong: ${JSON.stringify({ name: downloaded.name, text: downloaded.text.slice(0, 200) })}`);
+    }
+    console.log(`meeting: «Descargar conversación» -> ${downloaded.name} (${downloaded.text.split('\n').filter((l) => l.startsWith('**[')).length} bubble(s))`);
 
     await chrome.evaluate(session, "document.getElementById('settingsBtn').click();");
     const overlayOk = await waitFor(

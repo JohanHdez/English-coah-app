@@ -20,6 +20,7 @@ import { foldTranslation, nearBottom, createMeetingGate, createSerialQueue, with
 import { MODEL_ID } from '../embed.js';
 import * as store from '../store.js';
 import { createCoachPanel } from './coach.js';
+import { transcriptMarkdown } from '../coachdata.js';
 import { createReportPanel } from './report.js';
 
 // The transcription fetch (providers.js) carries a 30 s AbortSignal.timeout, so a stalled
@@ -186,7 +187,14 @@ export function renderMeeting(root, { settings, onEvent }) {
   reportBtn.textContent = 'Generar informe';
   reportBtn.hidden = true;
   controls.append(replyBtn, startBtn, resumeBtn, talkBtn, pauseBtn, stopBtn, reportBtn, newMeetingBtn);
-  section.append(controls);
+
+  // A text link above the controls, usable during the meeting and after it: the
+  // file is built here and never leaves the device.
+  const downloadBtn = document.createElement('button');
+  downloadBtn.type = 'button';
+  downloadBtn.className = 'download-transcript';
+  downloadBtn.textContent = 'Descargar conversación (.md)';
+  section.append(downloadBtn, controls);
 
   root.append(section);
 
@@ -335,6 +343,21 @@ export function renderMeeting(root, { settings, onEvent }) {
   // Set by «Borrar la conversación guardada»: a translation or a report that lands
   // afterwards must not write the deleted conversation back.
   let forgotten = false;
+  downloadBtn.addEventListener('click', () => {
+    const entries = withTranslations([...restored, ...(session ? session.transcript() : [])], cache);
+    if (!entries.length) { flashToast('Aún no hay conversación que descargar.'); return; }
+    const url = URL.createObjectURL(new Blob([transcriptMarkdown(entries)], { type: 'text/markdown;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    const now = new Date();
+    const p2 = (n) => String(n).padStart(2, '0');
+    a.download = `conversacion-${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())}-${p2(now.getHours())}-${p2(now.getMinutes())}.md`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
   function persistTranscript() {
     if (forgotten) return;
     const entries = withTranslations([...restored, ...(session ? session.transcript() : [])], cache);

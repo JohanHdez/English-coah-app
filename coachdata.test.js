@@ -84,3 +84,14 @@ test('saveFailureText names what was not saved, staged [almacenamiento]', () => 
   assert.equal(saveFailureText('profile'), '[almacenamiento] No se pudo guardar tu perfil.');
   assert.equal(saveFailureText('other'), '[almacenamiento] No se pudo guardar el cambio.');
 });
+
+test('transcriptMarkdown lists each bubble with its time, speaker and Spanish', async () => {
+  const { transcriptMarkdown } = await import('./coachdata.js');
+  const t = new Date(2026, 9, 14, 9, 5, 7).getTime();
+  const md = transcriptMarkdown([
+    { speaker: 'them', text: 'How are you?', es: '¿Cómo estás?', t },
+    { speaker: 'me', text: 'Fine, thanks.', t: t + 2000 },
+    { speaker: 'them', text: '   ', t },
+  ], new Date(2026, 9, 14));
+  assert.equal(md, '# Conversación — 2026-10-14\n\n**[09:05:07] Interlocutor:** How are you?\n> ¿Cómo estás?\n\n**[09:05:09] Yo:** Fine, thanks.\n');
+});
